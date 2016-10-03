@@ -1,0 +1,635 @@
+#!/bin/bash
+
+cat <<EOT
+
+#########################################
+#   This script was developed by Taos   #
+#     for use by Taos                   #
+#     to service xAd alerts             #
+#     regarding Kafka disk space.       #
+#   It is the property of Taos,         #
+#     and Taos reserves all rights      #
+#     to this script.                   #
+#########################################
+
+EOT
+
+# read config file
+dN=$( dirname $0 )													# path to config file based on calling path to this file.
+. $dN/kafka.cfg														# source the config file
+
+
+Lvl=1															# initial Level
+USE1="101"		# us-east-1       US East (N. Virginia)           000 - 199	kafka101
+APNE1="201"		# ap-northeast-1  Asia Pacific (Tokyo)            200 - 299	kafka201
+EUW1="301"		# eu-west-1       EU (Ireland)                    300 - 399	kafka301
+USW2="701"		# us-west-2       US West (Oregon)                700 - 799	kafka701
+
+echo "Please tell me the host name of the server to check."								# for now we'll ask for hostname
+read AWSHost														# get input from operator
+R=$( echo $AWSHost |awk -F. '{print $2}' )										# isolate region
+
+case "$R" in
+	"compute-1")		R="us-east-1"
+				RN=$USE1
+		;;
+	"us-east-1")		RN=$USE1
+		;;
+	"ap-northeast-1")	RN=$APNE1
+		;;
+	"eu-west-1")		RN=$EUW1
+		;;
+	"us-west-2")		RN=$USW2
+		;;
+esac
+echo "$R -> $RN"
+
+XHD="/media/ephemeral0/xad"
+BD8="${XHD}/enigma/kafka/bin"												# Bin Dir version-8
+DD8="/data/kafka_data"													# Data Dir version-8
+CD8="${XHD}/enigma/conf"												# Config Dir version-8
+BD10="/media/ephemeral0/kafka/"												# Bin Dir version-10
+DD10="/media/ephemeral1/kafka-data"											# Data Dir version-10
+CD10="/media/ephemeral0/kafka-conf"											# Config Dir version-10
+
+Jump="ssh -A -i $HOME/.ssh/xAD_rsa ${USER}@bastion.${R}.xad.com"							# a MACRO to use a bastion server as a jumphost
+
+#############################
+#                           #
+#  SUBROUTINES - FUNCTIONS  #
+#                           #
+#############################
+function Calc
+{	echo $(( $1 ))
+}
+
+function jumpFail
+{	if [ $? -ne 0 ]
+	then
+		echo "failed twice trying to execute command via jumphost"
+		echo "suggest checking remote access first, then retry script."
+		exit 1
+	fi
+}
+
+function tryTwice													# try to perform a remote command at most 2 times
+{	err=1
+	nt=0
+	while [ $err -ne 0  -a  $nt -ne 2 ]
+	do
+		Z=$( $Jump "ssh $HN 'sudo su - xad <<_EOT
+		( $1 )
+_EOT
+'"		$2 )
+		err=$?													# grab the returned status code
+		nt=$( Calc "nt + 1" )											# increment number of tries count
+	done
+	if [ $err -ne 0 ]
+	then
+		echo "Failed twice trying to execute command via ssh to $HN"
+		echo "Command: $1"
+		echo "Suggest checking remote access first, then retry script."
+		exit 1
+	else
+		echo $Z
+	fi
+}
+
+function setVdirs
+{	V=$( tryTwice "rpm -q -a |grep kafka |egrep \"main|conf\"" " |awk -F- '{print \$4}' |head -1" )
+echo "V=$V"
+	if [ "$V" = "0.8" ]
+	then
+		DD=$DD8;	BD=$BD8;	CD=$CD8
+	else
+		DD=$DD10;	BD=$BD10;	CD=$CD10
+	fi
+}
+
+function getDF
+{	DF=$( tryTwice "cd $DD ;df -h . |grep -i data" "|grep -i data |awk '{print \$5}' |awk -F% '{print \$1}'" )
+	if [ $? -eq 0 ]
+	then
+		echo "$DD DF=${DF} % full"
+		return $DF
+	else
+		return -1
+	fi
+}
+
+function getTopic
+{	if [ $Lvl -eq 1 ]
+	then
+		L=$( tail -2 kafka_DiskUsage.out |head -1 )								# get largest partition
+	else
+		L=$( grep -v "${T2}-[0-9]" kafka_DiskUsage.out |tail -2 |head -1 )					# get second largest partition
+		echo "L=$L"
+	fi
+	L1=$( echo $L |awk -F/ '{print $NF}' )										# strip off directory info.
+	L2=$( echo $L |awk -F- '{print $NF}' |wc -c |awk '{print $1}' )							# number of characters after the last '-' (partition number)
+	nc=$( echo $L1 |wc -c |awk '{print $1}' )									# number of characters in string
+	lot=$( Calc "$nc - $L2 -1" )											# number of characters in topic string (without partition)
+	T=$( echo $L1 |cut -c -$lot )											# topic string without directory or partition info.
+}
+
+function getPartitionInfo
+{
+	B=$( tryTwice "cd $BD;./kafka-topics.sh --zookeeper $ZKS --topic $T --describe |grep -v \"Configs:\"" " " )
+	B=$( echo $B |sed "s/.Last login.*//" )
+	rm kafka_partitionInfo.out
+	y=0
+	for u in $B
+	do
+		if [ "$u" = "Topic:" -a $y -ne 0 ]
+		then
+			echo "" >> kafka_partitionInfo.out
+		fi
+		/bin/echo -n " $u" >> kafka_partitionInfo.out
+		y=$( Calc "$y + 1" )
+	done
+	testTopic=$( head -1 kafka_partitionInfo.out |awk '{print $2}' )
+	if [ "$testTopic" != "$T" ]
+	then
+		echo "Failed to get new partitionInfo for $T - got $testTopic instead."
+		exit 0
+	fi
+}
+
+function getBrokerIDs
+{	C=$( tryTwice "er -e %${edc}:KAFKA_BROKERID" " " )
+}
+
+function getDuInfo
+{
+# get disk usage info for topic partitions.
+	P=$( tryTwice "cd $DD ;du -h . |sort -h" "|grep -iv \"last login\"" )
+# P has all the results on one line. We need to reformat to individual lines per entry.
+	r[0]="  "                                                                                                       # spaces between the first and second part of each line
+	r[1]="
+"                                                                                                                       # linefeed after the second entry to split into multiple lines.
+	j=0                                                                                                             # initial state of flip-flop
+# clean up format & save to file for later
+	for i in $P
+	do
+		/bin/echo -n "${i}${r[$j]}" >> kafka_DiskUsage.out							# output part of the line, spaces after first part and LF after second part.
+		j=$( Calc "1 - $j" )                                                                                    # flip-flop (1-0=1, 1-1=0) to switch between spaces and linefeed
+	done
+}
+
+function isItRebuilt
+{	fE=$( tryTwice "ls ${DD}/$REBUILT" "|egrep -iv 'last login|no such file'" )
+	if [ "$fE" != "" ]												# if the edge case flag file exists
+	then
+		echo "This seems to be a special case where the host was rebuilt."
+		echo "You should do this by hand, as I am not yet equipped to handle it."
+		exit 0
+	fi
+}
+
+function round
+{
+	n=${SL[$j]}
+	rem=$( echo $n |awk -F\. '{print $2}' )										# get any fractional part
+	if [ "$rem" != "" ]												# if there is fractional part
+	then
+		int=$( echo $n |awk -F\. '{print $1$2}' )								# effectively *10
+		n=$( echo $(( $int + 5 )) )										# effectively add .5
+		n=$( echo $(( $n / 10 )) )										# integer of rounded original value
+	fi
+	SL[$j]=$n
+}
+
+# There may be only one partition on a host for a given topic.
+# So we may have to check across multiple hosts.
+# also there is an edge case where a server had to be replaced.
+# this causes nearly a double sized partition for a period of time and can trigger alerts.
+# however even though the partition might be twice the size of another partition,
+# we don't necessarily want to escalate. If this is the case there will be a flag file to
+# notify us to use the normal reduction of retention value for the partition involved.
+
+function checkSize
+{
+echo "Checking sizes for $aTL"
+# we need to see if partition sizes are all nearly the same or if not escalate to xAD.
+	S=$( grep "${aTL}-[0-9]" kafka_DiskUsage.out |awk '{print $1}' )						# get sizes only
+	m=$( echo $S |wc -w |awk '{print $1}' )										# how many sizes do we have to compare
+	if [ $m -lt 2 ]													# if only one size found
+	then
+		T=$aTL
+		getPartitionInfo
+		if [ $? -ne 0 ]
+		then
+			getPartitionInfo
+			jumpFail
+		fi
+		getBrokerIDs
+		if [ $? -ne 0 ]
+		then
+			getBrokerIDs
+			jumpFail
+		fi
+		Pn=$( grep "${aTL}-[0-9]" kafka_DiskUsage.out |head -1 |awk -F\- '{print $NF}' )			# get the partition number
+		Isr=$( grep "Partition: $Pn" kafka_partitionInfo.out |awk '{print $NF}' )				# get the 2 Broker IDs listed in Isr:
+		BID_1=$( echo $Isr |awk -F, '{print $1}' )								# isolate the first Broker ID
+		BID_2=$( echo $Isr |awk -F, '{print $2}' )								# and the second BID
+		newBn=$( egrep -v '${BID_1}|${BID_2}' kafka_partitionInfo.out |head -1 |awk '{print $6}' )		# get the new Broker ID number
+		NHN=$( grep "^${newBn}:ec2" kafka_BIDs.out |awk -F: '{print $2}' )					# get the new hostname
+echo "checking host $NHN for another partition"
+		OHN=$HN													# save original host name
+		HN=$NHN													# use new host name
+		getDuInfo												# get more disk usage info for this topic from new host
+		HN=$OHN													# back to the problem host
+		S=$( grep "${aTL}-[0-9]" kafka_DiskUsage.out |awk '{print $1}' )					# get Sizes for this topic
+		m=$( echo $S |wc -w |awk '{print $1}' )									# number of Sizes found
+		if [ $m -lt 2 ]												# verify we now have more than one size
+		then
+			echo "Failed to get more than 1 partition"
+			exit 0
+		fi
+	fi
+# split size into number and scale
+	j=0
+	for i in $S
+	do
+		Sl=$( echo $i |wc -c |awk '{print $1}' )
+		k=$( Calc "$Sl - 2" )
+		SL[$j]=$( echo $i |cut -c 1-$k - )									# numeric portion
+		round
+		k=$( echo $(( $k + 1 )) )
+		SC[$j]=$( echo $i |cut -c ${k}- - )									# scale (K, M, or G)
+		j=$( Calc "$j + 1" )
+	done
+	j=$( Calc "$j - 1" )
+
+# compare scales. must be same or else need to escalate
+	for (( i=0; i<$j; i++ ))
+	do
+		n=$( Calc "$i + 1" )
+		if [ "${SC[$i]}" != "${SC[$n]}" ]
+		then
+			isItRebuilt
+			echo "partition sizes too far apart"
+			echo "Need to escalate!"
+			exit 0
+		fi
+	done
+# compare values: must be within a percentage of the largest size.
+# find largest size.
+	ls=${SL[0]}
+	for (( i=1; i<$m; i++ ))
+	do
+		if [ $ls -lt ${SL[$i]} ]
+		then
+			ls=${SL[$i]}
+		fi
+	done
+	pos=$( Calc "( $ls * $partitionSizeDelta ) / 100" )								# Percent Of Size
+	lsl=$( Calc "$ls - $pos" )											# Lower Size Limit
+	for (( i=0; i<$m; i++ ))
+	do
+		if [ ${SL[$i]} -lt $lsl ]
+		then
+			isItRebuilt
+			echo "Need to escalate!"
+			echo "partition sizes too far apart"
+			exit 0
+		fi
+	done
+}
+
+function checkHost
+{	setVdirs
+# get percent disk full information.
+	getDF
+	if [ $DF -eq -1 ]
+	then
+		getDF
+		if [ $DF -eq -1 ]
+		then
+			echo "Failed to get \"Disk Full\" info: DF=$DF"
+			exit 1
+		fi
+	fi
+	if [ $DF -lt 80 ]
+	then
+		echo "This disk usage shows less than 80% used DF=${DF}%."
+		echo "The alert may have already cleared."
+		exit 0
+	fi
+	if [ $DF -gt 95 ]
+	then
+		echo "This disk is more than 95% full. DF=${DF}%"
+		echo "We can try to do the procedure, or you might want to escalate to xAd immediately."
+		echo "Shall we proceed ( y or n )?"
+		read Reply
+		case "$Reply" in
+		"n" | "N")	echo "OK - Please escalate."
+				exit 0
+			;;
+		"y" | "Y")	echo "Proceeding"
+			;;
+		*)		echo "You really should quit trying to jerk my chain."
+				exit 1
+			;;
+		esac
+	fi
+
+# get disk usage info for topic partitions.
+	rm -f kafka_DiskUsage.out											# remove old file
+	getDuInfo
+# now to check any topics that are 10G or larger for possible misconfigurations shown by radically different sizes.
+	nL=$( wc -l kafka_DiskUsage.out |awk '{print $1}' )
+	if [ $nL -le 1 ]
+	then
+		echo "no kafka partitions on this host."
+		exit 1
+	fi
+# get list of topics having size in the Gb range with no fractional part ( >= 10G )
+	nL2=$( Calc "$nL - 1" )
+	TL=$( head -$nL2 kafka_DiskUsage.out |grep "[0-9]G " |grep -v "[0-9]\.[0-9]" |sort -u - |awk '{print $2}' |awk -F\/ '{print $2}' )
+	if [ "$TL" = "" ]
+	then
+		echo "Could not find any large partitions on this host."
+		exit 1
+	fi
+	for i in $TL
+	do
+		TLl=$( echo $(( $( echo $i |awk -F\- '{print $NF}'|wc -c |awk '{print $1}' ) + 1 )) )			# TLl = length of $i string following the last '-' character
+		TL1=$( echo $i |wc -c |awk '{print $1}' )								# TL1 = length of $i string
+		aTLl=$( Calc "$TL1 - $TLl" )										# length of $i string up to the last '-' character
+		aTL=$( echo $i |cut -c 1-$aTLl )									# aTL = topic string up to the last '-' character
+		checkSize
+	done
+# now that we know there are no misconfiguration situations to escalate, clear out and reload DU info.
+	rm -f kafka_DiskUsage.out
+	getDuInfo
+echo "HN=$HN"
+# get the largest disk usage topic
+	getTopic
+	echo "Topic: $T"
+	NT=$( grep "${T}-[0-9]" kafka_DiskUsage.out |wc -l |awk '{print $1}' )						# number of entries for this topic
+	if [ $NT -lt 2 ]
+	then
+# get list of hosts with 3 of this topic partitions for possible use in picker function.
+		getPartitionInfo
+		if [ !-f kafka_partitionInfo.out ]
+		then
+			getPartitionInfo
+		fi
+		if [ -f kafka_partitionInfo.out ]
+		then
+			getBrokerIDs
+			if [ !-f kafka_BIDs.out ]
+			then
+				getBrokerIDs
+			fi
+		fi
+		rm -f kafka_hosts.out
+		if [ -f kafka_partitionInfo.out -a -f kafka_BIDs.out ]
+		then
+			for i in $( cat kafka_BIDs.out )
+			do
+				BID=$( echo $i |awk -F: '{print $1}' )
+				NL=$( grep "Leader: ${BID}	" kafka_partitionInfo.out |wc -l |awk '{print $1}' )
+				if [ $NL -ge 3 ]
+				then
+					echo $i>>kafka_hosts.out
+					grep "Leader: ${BID}	" kafka_partitionInfo.out >>kafka_hosts.out
+				fi
+			done
+		fi
+	fi
+	return 0
+}
+
+function picker
+{	NL=$( $Jump "er -e %kafka${RN} |wc -l |awk '{print $1}'" )
+	if [ $? -ne 0 ]
+	then
+		NL=$( $Jump "er -e %kafka${RN} |wc -l |awk '{print $1}'" )
+		jumpFail
+	fi
+	RL=$( Calc "$RANDOM % $NL" )
+	if [ -f kafka_hosts.out ]
+	then
+		HN=$( grep amazonaws kafka_hosts.out |head -1 |awk -F: '{print $2}' )
+	else
+		HN=$( $Jump "er -e %kafka${RN} |head -$RL |tail -1" )
+		if [ $? -ne 0 ]
+		then
+			HN=$( $Jump "er -e %kafka${RN} |head -$RL |tail -1" )
+			jumpFail
+		fi
+	fi
+	checkHost
+	return $?
+}
+
+function findHost
+{	HN=$( $Jump "er -e %kafka${RN} |grep $H" )									# start with the hostname from the email
+	if [ $? -ne 0 ]
+	then
+		HN=$( $Jump "er -e %kafka${RN} |grep $H" )
+		jumpFail
+	fi
+	edc=$( tryTwice "cat /etc/defaultcluster" "|grep -v \"Last login\"" )
+	echo "DefaultCluster: $edc"
+	ZKS=$( tryTwice "er -e %${edc}:ZK_CONNECT_STRING" "|grep -v \"Last login\"" )
+	echo "ZooKeeperConnectString: $ZKS"
+	c=0
+	checkHost
+	while [ $? != 0 ]
+	do
+		c=$( Calc "$c + 1" )
+		if [ $c -eq 3 ]
+		then
+			echo "Did not find host with more than one $T partition"
+			echo "Suggest escalate to xAD"
+			echo "Alternatively, re-run the script or try manually"
+			exit 0
+		fi
+		picker
+	done
+}
+
+function getRetentionValue
+{
+	R3=$( tryTwice "cd $BD; ./kafka-topics.sh --zookeeper $ZKS --topic $T --describe |grep \"Configs:\"" " " )
+	R3=$( echo $R3 |sed "s/.Last login.*//" )
+	RV=$( echo $R3 |awk '{print $NF}' |awk -F= '{print $2}' )							# Retention Value
+}
+
+function setRetentionValue
+{	echo "$( date ): I am going to change the retention time of $T from $RV to $NRV"
+	SRV=$( tryTwice "cd $BD; ./kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${NRV}" " " )
+}
+
+function resetRV
+{	echo "$( date ): I am going to restore the retention value of $T from $NRV to $RV"
+	SRV=$( tryTwice "cd $BD; ./kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${RV}" " " )
+}
+
+function lvlUp
+{	Lvl=$( Calc "$Lvl + 1" )											# adjust level up one
+	HN2=$HN														# save HostName
+	T2=$T														# save Topic
+	RV2=$RV														# save Retention Value
+	NRV2=$NRV													# save New Retention Value
+}
+
+function lvlDown
+{	HN=$HN2														# restore HostName
+	T=$T2														# restore Topic
+	RV=$RV2														# restore Retention Value
+	NRV=$NRV2													# restore New Retention Value
+	Lvl=$( Calc "$Lvl - 1" )											# adjust level down one
+}
+
+function getSecs
+{	ct=$( date -j -f "%a %b %d %T %Z %Y" "$( date )" "+%s" )
+	echo "LR=$LR   ct=$ct"
+}
+
+function waitTime
+{	while [ $LR -gt $ct ]
+	do
+		sleep $sleepIncrement
+		getSecs
+	done
+}
+
+function tryFix
+{	getRetentionValue
+	NRV=$( Calc "$RV - ( ( $RV * $retentionTimeDelta ) / 100 )" )							# New Retention Value
+
+# add comment in ticket clearly stating the "Topic", ZooKeeper String, current Retention Value, and proposed new RV
+	cat <<EOT |tee -a "kafka_connect.txt"
+
+Comment to be added to SalesForce Ticket:
+	User:                           $USER
+	Cluster:			$edc
+	hostname:			$HN
+	Topic:				$T
+	ZooKeeper String:		$ZKS
+	Current Retention Value:	$RV
+	Proposed Retention Value:	$NRV
+	/data % full:			$DF
+
+EOT
+	echo "Please cut the above information and add it as a comment in the SalesForce Ticket."
+	echo "Press enter ONLY AFTER you have done that."
+	echo "            ---- -----"
+	read Reply
+	getSecs
+	ctis=$ct
+	echo "$ctis" >last_run.txt
+
+# ask the operator if OK to make change.
+	cat <<EOT
+I can change the RetentionValue from $RV to $NRV if you like.
+(Y or N)
+EOT
+	read Reply
+	case "$Reply" in
+	"Y" | "y")	echo "Please confirm your answer again:(Y or N)"
+			read Reply2
+			case "$Reply2" in
+			"Y" | "y")	echo "do the deed"
+					setRetentionValue
+				;;
+			"N" | "n")	echo "Canceling the intent to make changes."
+					if [ $Lvl -eq 1 ]
+					then
+						exit 0									# nothing more to be done
+					fi
+					lvlDown
+					getDF
+				;;
+			*)		echo "STOP THAT!!!!"
+					if [ $Lvl -eq 1 ]
+					then
+						exit 1
+					fi
+					lvlDown
+					getDF
+			esac
+		;;
+	"N" | "n")	echo "OK - I won't make any changes."
+			if [ $Lvl -eq 1 ]
+			then
+				exit 0											# nothing more to be done
+			fi
+			lvlDown
+			getDF
+		;;
+	*)		echo "Don't EVER do that again!!!!"
+	esac
+}
+
+############################
+#                          #
+#  Start of main program.  #
+#                          #
+############################
+B=$( $Jump "ssh $AWSHost 'pwd'" )											# verify that we can reach this host
+if [ $? -ne 0 ]														# might fail once due to network timeout
+then
+	B=$( $Jump "ssh $AWSHost 'pwd'" )
+	jumpFail
+fi
+if [ "$B" != "/home/$USER" ]												# check expected return string
+then
+	echo "could not connect to $AWSHost"
+	exit 0
+fi
+H=$AWSHost														# we'll attempt to use this as our initial host
+rm -f kafka_connect.txt
+findHost														
+echo "Using kafka host $HN"												# Got a good host
+tryFix															# see if we can proceed
+
+# at this point we should have altered the retention value of the largest partition(s)
+# now we wait to see if that fixes the problem.
+# if after some period of time the percent full of the data volume has not dropped below 80% (the alert threshold),
+# we should consider doing the same for the next largest partition(s).
+# exactly what that period of time should be remains a gray area, so I will assume that after 20 minutes, we will consider this a viable option.
+# but for now we want to monitor the system, to see that the size of the altered partition(s) do indeed drop.
+# if they do not change then go immediately to the next largest.
+
+if [ $? -eq 0 ]
+then
+	getSecs
+	quitTime=$( Calc "$ct + $qet" )
+	nextLvlT=$( Calc "$ct + $sleepTime" )
+	getDF
+	while [ $DF -gt 80 -a $ct -lt $quitTime ]
+	do
+		LR=$( Calc "$ct + $sleepTime" )
+		echo "DF=$DF %"
+		waitTime
+		if [ $Lvl -eq 1 ]
+		then
+			ODF=$DF
+			getDF
+			if [ $DF -ge $ODF ]
+			then
+				lvlUp
+				getTopic
+				tryFix
+			fi
+		else
+			getDF
+		fi
+	done
+	resetRV
+	if [ $Lvl -eq 2 ]
+	then
+		lvlDown
+		resetRV
+	fi
+	if [ $DF -ge $ADFL ]
+	then
+		echo "Failed to reduce the data volume size below alert threshold"
+		echo "Must escalate to xAd."
+	fi
+fi
