@@ -17,6 +17,10 @@ EOT
 # read config file
 dN=$( dirname $0 )													# path to config file based on calling path to this file.
 . $dN/kafka.cfg														# source the config file
+if [ "$USER" = "ottol" ]
+then
+	USER="oleichliter"
+fi
 
 
 Lvl=1															# initial Level
@@ -133,34 +137,53 @@ function getTopic
 }
 
 function getPartitionInfo
-{
+{	err=0
 	B=$( tryTwice "cd $BD;./kafka-topics.sh --zookeeper $ZKS --topic $T --describe |grep -v \"Configs:\"" " " )
 	B=$( echo $B |sed "s/.Last login.*//" )
 	rm kafka_partitionInfo.out
+	if [ -e "kafka_partitionInfo.out" ]
+	then
+		return 1
+	fi
 	y=0
 	for u in $B
 	do
 		if [ "$u" = "Topic:" -a $y -ne 0 ]
 		then
 			echo "" >> kafka_partitionInfo.out
+			err=${err}||$?
 		fi
 		/bin/echo -n " $u" >> kafka_partitionInfo.out
+		err=${err}||$?
 		y=$( Calc "$y + 1" )
 	done
 	testTopic=$( head -1 kafka_partitionInfo.out |awk '{print $2}' )
 	if [ "$testTopic" != "$T" ]
 	then
 		echo "Failed to get new partitionInfo for $T - got $testTopic instead."
-		exit 0
+		return 1
 	fi
+	return $err
 }
 
 function getBrokerIDs
-{	C=$( tryTwice "er -e %${edc}:KAFKA_BROKERID" " " )
+{	err=0
+	C=$( tryTwice "er -e %${edc}:KAFKA_BROKERID" " |grep -v login " )
+	rm kafka_BIDs.out
+	if [ -e "kafka_BIDs.out" ]
+	then
+		return 1
+	fi
+	for i in $C
+	do
+		echo $i >> kafka_BIDs.out
+		err=$(( $err | $? ))
+	done
+	return $err
 }
 
 function getDuInfo
-{
+{	err=0
 # get disk usage info for topic partitions.
 	P=$( tryTwice "cd $DD ;du -h . |sort -h" "|grep -iv \"last login\"" )
 # P has all the results on one line. We need to reformat to individual lines per entry.
@@ -172,8 +195,10 @@ function getDuInfo
 	for i in $P
 	do
 		/bin/echo -n "${i}${r[$j]}" >> kafka_DiskUsage.out							# output part of the line, spaces after first part and LF after second part.
+		err=$(( $err | $? ))
 		j=$( Calc "1 - $j" )                                                                                    # flip-flop (1-0=1, 1-1=0) to switch between spaces and linefeed
 	done
+	return $err
 }
 
 function isItRebuilt
@@ -298,7 +323,8 @@ echo "checking host $NHN for another partition"
 }
 
 function checkHost
-{	setVdirs
+{	err=0
+	setVdirs
 # get percent disk full information.
 	getDF
 	if [ $DF -eq -1 ]
@@ -310,15 +336,15 @@ function checkHost
 			exit 1
 		fi
 	fi
-	if [ $DF -lt 80 ]
+	if [ $DF -lt $ADFL ]
 	then
-		echo "This disk usage shows less than 80% used DF=${DF}%."
+		echo "This disk usage shows less than ${ADFL}% used DF=${DF}%."
 		echo "The alert may have already cleared."
 		exit 0
 	fi
-	if [ $DF -gt 95 ]
+	if [ $DF -gt $UDFL ]
 	then
-		echo "This disk is more than 95% full. DF=${DF}%"
+		echo "This disk is more than ${UDFL}% full. DF=${DF}%"
 		echo "We can try to do the procedure, or you might want to escalate to xAd immediately."
 		echo "Shall we proceed ( y or n )?"
 		read Reply
@@ -336,6 +362,10 @@ function checkHost
 
 # get disk usage info for topic partitions.
 	rm -f kafka_DiskUsage.out											# remove old file
+	if [ -e "kafka_DiskUsage.out" ]
+	then
+		return 1
+	fi
 	getDuInfo
 # now to check any topics that are 10G or larger for possible misconfigurations shown by radically different sizes.
 	nL=$( wc -l kafka_DiskUsage.out |awk '{print $1}' )
@@ -362,6 +392,10 @@ function checkHost
 	done
 # now that we know there are no misconfiguration situations to escalate, clear out and reload DU info.
 	rm -f kafka_DiskUsage.out
+	if [ -e "kafka_DiskUsage.out" ]
+	then
+		return 1
+	fi
 	getDuInfo
 echo "HN=$HN"
 # get the largest disk usage topic
@@ -385,6 +419,10 @@ echo "HN=$HN"
 			fi
 		fi
 		rm -f kafka_hosts.out
+		if [ -e "kafka_hosts.out" ]
+		then
+			return 1
+		fi
 		if [ -f kafka_partitionInfo.out -a -f kafka_BIDs.out ]
 		then
 			for i in $( cat kafka_BIDs.out )
@@ -394,12 +432,13 @@ echo "HN=$HN"
 				if [ $NL -ge 3 ]
 				then
 					echo $i>>kafka_hosts.out
+					err=$(( $err | $? ))
 					grep "Leader: ${BID}	" kafka_partitionInfo.out >>kafka_hosts.out
 				fi
 			done
 		fi
 	fi
-	return 0
+	return $err
 }
 
 function picker
@@ -506,14 +545,14 @@ function tryFix
 	cat <<EOT |tee -a "kafka_connect.txt"
 
 Comment to be added to SalesForce Ticket:
-	User:                           $USER
-	Cluster:			$edc
-	hostname:			$HN
-	Topic:				$T
-	ZooKeeper String:		$ZKS
-	Current Retention Value:	$RV
-	Proposed Retention Value:	$NRV
-	/data % full:			$DF
+        User:                           $USER
+        Cluster:                        $edc
+        hostname:                       $HN
+        Topic:                          $T
+        ZooKeeper String:               $ZKS
+        Current Retention Value:        $RV
+        Proposed Retention Value:       $NRV
+        /data % full:                   $DF
 
 EOT
 	echo "Please cut the above information and add it as a comment in the SalesForce Ticket."
@@ -584,6 +623,10 @@ then
 fi
 H=$AWSHost														# we'll attempt to use this as our initial host
 rm -f kafka_connect.txt
+if [ -e "kafka_connect.txt" ]
+then
+	exit 1
+fi
 findHost														
 echo "Using kafka host $HN"												# Got a good host
 tryFix															# see if we can proceed
@@ -602,7 +645,7 @@ then
 	quitTime=$( Calc "$ct + $qet" )
 	nextLvlT=$( Calc "$ct + $sleepTime" )
 	getDF
-	while [ $DF -gt 80 -a $ct -lt $quitTime ]
+	while [ $DF -gt $ADFL -a $ct -lt $quitTime ]
 	do
 		LR=$( Calc "$ct + $sleepTime" )
 		echo "DF=$DF %"
