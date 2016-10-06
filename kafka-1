@@ -56,8 +56,6 @@ BD10="/media/ephemeral0/kafka/"												# Bin Dir version-10
 DD10="/media/ephemeral1/kafka-data"											# Data Dir version-10
 CD10="/media/ephemeral0/kafka-conf"											# Config Dir version-10
 
-Jump="ssh -A -i $HOME/.ssh/xAD_rsa ${USER}@bastion.${R}.xad.com"							# a MACRO to use a bastion server as a jumphost
-
 #############################
 #                           #
 #  SUBROUTINES - FUNCTIONS  #
@@ -81,18 +79,15 @@ function tryTwice													# try to perform a remote command at most 2 times
 	nt=0
 	while [ $err -ne 0  -a  $nt -ne 2 ]
 	do
-		Z=$( $Jump "ssh $HN 'sudo su - xad <<_EOT
-		( $1 )
-_EOT
-'"		$2 )
+		Z=$( ssh $HN "$1" )
 		err=$?													# grab the returned status code
 		nt=$( Calc "nt + 1" )											# increment number of tries count
 	done
 	if [ $err -ne 0 ]
 	then
-		echo "Failed twice trying to execute command via ssh to $HN"
-		echo "Command: $1"
-		echo "Suggest checking remote access first, then retry script."
+		echo "Failed twice trying to execute command via ssh to $HN" >/dev/stderr
+		echo "Command: $1" >/dev/stderr
+		echo "Suggest checking remote access first, then retry script." >/dev/stderr
 		exit 1
 	else
 		echo $Z
@@ -100,8 +95,7 @@ _EOT
 }
 
 function setVdirs
-{	V=$( tryTwice "rpm -q -a |grep kafka |egrep \"main|conf\"" " |awk -F- '{print \$4}' |head -1" )
-echo "V=$V"
+{	V=$( tryTwice "rpm -q -a |grep kafka |egrep 'main|conf' |awk -F- '{print \$4}' |head -1" )
 	if [ "$V" = "0.8" ]
 	then
 		DD=$DD8;	BD=$BD8;	CD=$CD8
@@ -111,13 +105,15 @@ echo "V=$V"
 }
 
 function getDF
-{	DF=$( tryTwice "cd $DD ;df -h . |grep -i data" "|grep -i data |awk '{print \$5}' |awk -F% '{print \$1}'" )
+{	TMPs="df -h $DD |grep -i data |awk '{print \$5}' |awk -F% '{print \$1}'"
+	DF=$( tryTwice "$TMPs" )
 	if [ $? -eq 0 ]
 	then
 		echo "$DD DF=${DF} % full"
-		return $DF
+		return 0
 	else
-		return -1
+		echo "problem getting DF of /data"
+		return 1
 	fi
 }
 
@@ -138,7 +134,7 @@ function getTopic
 
 function getPartitionInfo
 {	err=0
-	B=$( tryTwice "cd $BD;./kafka-topics.sh --zookeeper $ZKS --topic $T --describe |grep -v \"Configs:\"" " " )
+	B=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --describe |grep -v \"Configs:\"' " )
 	B=$( echo $B |sed "s/.Last login.*//" )
 	rm kafka_partitionInfo.out
 	if [ -e "kafka_partitionInfo.out" ]
@@ -168,7 +164,7 @@ function getPartitionInfo
 
 function getBrokerIDs
 {	err=0
-	C=$( tryTwice "er -e %${edc}:KAFKA_BROKERID" " |grep -v login " )
+	C=$( tryTwice "er -e %${edc}:KAFKA_BROKERID |grep -v login " )
 	rm kafka_BIDs.out
 	if [ -e "kafka_BIDs.out" ]
 	then
@@ -185,7 +181,7 @@ function getBrokerIDs
 function getDuInfo
 {	err=0
 # get disk usage info for topic partitions.
-	P=$( tryTwice "cd $DD ;du -h . |sort -h" "|grep -iv \"last login\"" )
+	P=$( tryTwice "du -h $DD |sort -h |grep -iv 'last login'" )
 # P has all the results on one line. We need to reformat to individual lines per entry.
 	r[0]="  "                                                                                                       # spaces between the first and second part of each line
 	r[1]="
@@ -202,13 +198,14 @@ function getDuInfo
 }
 
 function isItRebuilt
-{	fE=$( tryTwice "ls ${DD}/$REBUILT" "|egrep -iv 'last login|no such file'" )
+{	fE=$( tryTwice "sudo su - xad ls ${DD}/$REBUILT |egrep -iv 'last login|no such file'" )
 	if [ "$fE" != "" ]												# if the edge case flag file exists
 	then
 		echo "This seems to be a special case where the host was rebuilt."
 		echo "You should do this by hand, as I am not yet equipped to handle it."
-		exit 0
+		exit 0													# can return zero to handle normally
 	fi
+	return 1													# not a rebuilt condition - so recommend escalation
 }
 
 function round
@@ -259,7 +256,6 @@ echo "Checking sizes for $aTL"
 		BID_2=$( echo $Isr |awk -F, '{print $2}' )								# and the second BID
 		newBn=$( egrep -v '${BID_1}|${BID_2}' kafka_partitionInfo.out |head -1 |awk '{print $6}' )		# get the new Broker ID number
 		NHN=$( grep "^${newBn}:ec2" kafka_BIDs.out |awk -F: '{print $2}' )					# get the new hostname
-echo "checking host $NHN for another partition"
 		OHN=$HN													# save original host name
 		HN=$NHN													# use new host name
 		getDuInfo												# get more disk usage info for this topic from new host
@@ -315,9 +311,12 @@ echo "checking host $NHN for another partition"
 		if [ ${SL[$i]} -lt $lsl ]
 		then
 			isItRebuilt
-			echo "Need to escalate!"
-			echo "partition sizes too far apart"
-			exit 0
+			if [ $? -eq 1 ]
+			then
+				echo "Need to escalate!"
+				echo "partition sizes too far apart"
+				exit 0
+			fi
 		fi
 	done
 }
@@ -376,7 +375,7 @@ function checkHost
 	fi
 # get list of topics having size in the Gb range with no fractional part ( >= 10G )
 	nL2=$( Calc "$nL - 1" )
-	TL=$( head -$nL2 kafka_DiskUsage.out |grep "[0-9]G " |grep -v "[0-9]\.[0-9]" |sort -u - |awk '{print $2}' |awk -F\/ '{print $2}' )
+	TL=$( head -$nL2 kafka_DiskUsage.out |grep "[0-9]G " |grep -v "[0-9]\.[0-9]" |sort -u - |awk '{print $2}' |awk -F\/ '{print $NF}' )
 	if [ "$TL" = "" ]
 	then
 		echo "Could not find any large partitions on this host."
@@ -442,10 +441,10 @@ echo "HN=$HN"
 }
 
 function picker
-{	NL=$( $Jump "er -e %kafka${RN} |wc -l |awk '{print $1}'" )
+{	NL=$( er -e %kafka${RN} |wc -l |awk '{print $1}' )
 	if [ $? -ne 0 ]
 	then
-		NL=$( $Jump "er -e %kafka${RN} |wc -l |awk '{print $1}'" )
+		NL=$( er -e %kafka${RN} |wc -l |awk '{print $1}' )
 		jumpFail
 	fi
 	RL=$( Calc "$RANDOM % $NL" )
@@ -453,10 +452,10 @@ function picker
 	then
 		HN=$( grep amazonaws kafka_hosts.out |head -1 |awk -F: '{print $2}' )
 	else
-		HN=$( $Jump "er -e %kafka${RN} |head -$RL |tail -1" )
+		HN=$( er -e %kafka${RN} |head -$RL |tail -1 )
 		if [ $? -ne 0 ]
 		then
-			HN=$( $Jump "er -e %kafka${RN} |head -$RL |tail -1" )
+			HN=$( er -e %kafka${RN} |head -$RL |tail -1 )
 			jumpFail
 		fi
 	fi
@@ -465,15 +464,15 @@ function picker
 }
 
 function findHost
-{	HN=$( $Jump "er -e %kafka${RN} |grep $H" )									# start with the hostname from the email
+{	HN=$( er -e %kafka${RN} |grep $H )									# start with the hostname from the email
 	if [ $? -ne 0 ]
 	then
-		HN=$( $Jump "er -e %kafka${RN} |grep $H" )
+		HN=$( er -e %kafka${RN} |grep $H )
 		jumpFail
 	fi
-	edc=$( tryTwice "cat /etc/defaultcluster" "|grep -v \"Last login\"" )
+	edc=$( tryTwice "cat /etc/defaultcluster | grep -v \"Last login\"" )
 	echo "DefaultCluster: $edc"
-	ZKS=$( tryTwice "er -e %${edc}:ZK_CONNECT_STRING" "|grep -v \"Last login\"" )
+	ZKS=$( tryTwice "er -e %${edc}:ZK_CONNECT_STRING  | grep -v \"Last login\"" )
 	echo "ZooKeeperConnectString: $ZKS"
 	c=0
 	checkHost
@@ -493,19 +492,19 @@ function findHost
 
 function getRetentionValue
 {
-	R3=$( tryTwice "cd $BD; ./kafka-topics.sh --zookeeper $ZKS --topic $T --describe |grep \"Configs:\"" " " )
+	R3=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --describe |grep \"Configs:\" '" )
 	R3=$( echo $R3 |sed "s/.Last login.*//" )
 	RV=$( echo $R3 |awk '{print $NF}' |awk -F= '{print $2}' )							# Retention Value
 }
 
 function setRetentionValue
 {	echo "$( date ): I am going to change the retention time of $T from $RV to $NRV"
-	SRV=$( tryTwice "cd $BD; ./kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${NRV}" " " )
+	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${NRV} '"  )
 }
 
 function resetRV
 {	echo "$( date ): I am going to restore the retention value of $T from $NRV to $RV"
-	SRV=$( tryTwice "cd $BD; ./kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${RV}" " " )
+	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${RV} '"  )
 }
 
 function lvlUp
@@ -525,7 +524,7 @@ function lvlDown
 }
 
 function getSecs
-{	ct=$( date -j -f "%a %b %d %T %Z %Y" "$( date )" "+%s" )
+{	ct=$( date "+%s" )
 	echo "LR=$LR   ct=$ct"
 }
 
@@ -610,10 +609,10 @@ EOT
 #  Start of main program.  #
 #                          #
 ############################
-B=$( $Jump "ssh $AWSHost 'pwd'" )											# verify that we can reach this host
+B=$( ssh $AWSHost 'pwd' )											# verify that we can reach this host
 if [ $? -ne 0 ]														# might fail once due to network timeout
 then
-	B=$( $Jump "ssh $AWSHost 'pwd'" )
+	B=$( ssh $AWSHost 'pwd' )
 	jumpFail
 fi
 if [ "$B" != "/home/$USER" ]												# check expected return string
