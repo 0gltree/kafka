@@ -17,10 +17,6 @@ EOT
 # read config file
 dN=$( dirname $0 )													# path to config file based on calling path to this file.
 . $dN/kafka.cfg														# source the config file
-if [ "$USER" = "ottol" ]
-then
-	USER="oleichliter"
-fi
 
 
 Lvl=1															# initial Level
@@ -29,8 +25,92 @@ APNE1="201"		# ap-northeast-1  Asia Pacific (Tokyo)            200 - 299	kafka20
 EUW1="301"		# eu-west-1       EU (Ireland)                    300 - 399	kafka301
 USW2="701"		# us-west-2       US West (Oregon)                700 - 799	kafka701
 
-echo "Please tell me the host name of the server to check."								# for now we'll ask for hostname
+BH[101]="bastion.us-east-1.xad.com"
+BH[201]="bastion.ap-northeast-1.xad.com"
+BH[301]="bastion.eu-west-1.xad.com"
+BH[701]="bastion.us-west-2.xad.com"
+BH[801]="bastion.cn-north-1.xad.com"
+compute1=101
+useast1=101
+apnortheast1=201
+euwest1=301
+uswest2=701
+cnnorth1=801
+
+echo "Please tell me the host server to check."										# for now we'll ask for hostname
 read AWSHost														# get input from operator
+# Ticket has:  "Host: xAd-Kafka-US-VPC-52.90.24.184"
+# we need:                        "ec2-52-90-24-184.compute-1.amazonaws.com"
+pre=$(echo $AWSHost |cut -c -3)
+if [ "$pre" != "ec2" ]
+then
+	Ipa=$( echo $AWSHost |awk -F\- '{print $NF}' |awk -F\. '{print $1"-"$2"-"$3"-"$4}' )
+	Regn=$( echo $AWSHost |awk -F\- '{print $3}' )
+	eDC=$( cat /etc/defaultcluster )
+	Cn=$( echo $eDC |cut -c $(( $( echo $eDC |wc -c ) -3 ))- )
+	case $Regn in
+		"US")	RCn="101 701"; if [ $Cn -ne 101 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+			;;
+		"AP")	RCn=201; if [ $Cn -ne 201 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+			;;
+		"EU")	RCn=301; if [ $Cn -ne 301 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+			;;
+		"W2")	RCn="101 701"; if [ $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+			;;
+		"CN")	RCn=801; if [ $Cn -ne 801 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+			;;
+		*)	echo "I don't recognize that region $Regn"; exit 0
+			;;
+	esac
+	Pnodes=$( for i in $RCn;do er -e %kafka$i |grep $Ipa; done )
+	nPn=$( echo $Pnodes |wc -w |awk '{print $1}' )
+	if [ $nPn -eq 0 ]
+	then
+		echo "Cannot find a host with that IP"
+		exit 1
+	else
+		if [ $nPn -gt 1 ]
+		then
+			echo "Found $nPn nodes with that IP"
+			echo $Pnodes
+			for i in $Pnodes
+			do
+				iN=$(echo $i |awk -F. '{print $2}' |sed "s/-//g")
+				if [ ${!iN} -ne $Cn ]
+				then
+					cR=$(ssh -A ${BH[${!iN}]} "ssh $i \"df -h |grep -i 'data' |tail -1\"")
+				else
+					cR=$(ssh $i "df -h |grep -i 'data' |tail -1")
+				fi
+				pDf=$(echo $cR |awk '{print $5}' |awk -F\% '{print $1}')
+				if [ $pDf -ge 80 ]
+				then
+					if [ ${!iN} -ne $Cn ]
+					then
+						echo "You must login to ${BH[$a]} and run kafka-1 from there"
+						exit 0
+					else
+						newHost=$i
+						break
+					fi
+				fi
+			done
+			tHost=$( echo $Pnodes |grep $newHost )
+			if [ "$tHost" = "" ]
+			then
+				echo "No good"
+				exit 1
+			fi
+			Pnodes=$newHost
+		fi
+	fi
+	echo "Using $Pnodes"
+	AWSHost=$Pnodes
+fi
+
+
+# HostIP=$( er -e %kafka$Cn |grep Ipa )
+# R=$( echo $HostIP |awk -F. '{print $2}' )
 R=$( echo $AWSHost |awk -F. '{print $2}' )										# isolate region
 
 case "$R" in
@@ -63,6 +143,7 @@ CD10="/media/ephemeral0/kafka-conf"											# Config Dir version-10
 #############################
 function Calc
 {	echo $(( $1 ))
+	if [ $? -ne 0 ]; then exit 1; fi
 }
 
 function jumpFail
@@ -75,8 +156,8 @@ function jumpFail
 }
 
 function tryTwice													# try to perform a remote command at most 2 times
-{	err=1
-	nt=0
+{	err=1														# init err for entering while loop
+	nt=0														# init try count for while loop
 	while [ $err -ne 0  -a  $nt -ne 2 ]
 	do
 		Z=$( ssh $HN "$1" )
@@ -136,11 +217,8 @@ function getPartitionInfo
 {	err=0
 	B=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --describe |grep -v \"Configs:\"' " )
 	B=$( echo $B |sed "s/.Last login.*//" )
-	rm kafka_partitionInfo.out
-	if [ -e "kafka_partitionInfo.out" ]
-	then
-		return 1
-	fi
+	rm -f kafka_partitionInfo.out
+	if [ -e "kafka_partitionInfo.out" ]; then return 1; fi
 	y=0
 	for u in $B
 	do
@@ -164,17 +242,10 @@ function getPartitionInfo
 
 function getBrokerIDs
 {	err=0
-	C=$( tryTwice "er -e %${edc}:KAFKA_BROKERID |grep -v login " )
-	rm kafka_BIDs.out
-	if [ -e "kafka_BIDs.out" ]
-	then
-		return 1
-	fi
-	for i in $C
-	do
-		echo $i >> kafka_BIDs.out
-		err=$(( $err | $? ))
-	done
+	C=$( tryTwice "er -e %${edc}:KAFKA_BROKERID |grep -v login " )							# get the Broker ID info
+	rm -f kafka_BIDs.out												# remove any old file
+	if [ -e "kafka_BIDs.out" ]; then return 1; fi									# verify removal
+	for i in $C; do  echo $i >> kafka_BIDs.out;  err=$(( $err | $? ));  done					# write the data to new file
 	return $err
 }
 
@@ -198,7 +269,7 @@ function getDuInfo
 }
 
 function isItRebuilt
-{	fE=$( tryTwice "sudo su - xad ls ${DD}/$REBUILT |egrep -iv 'last login|no such file'" )
+{	fE=$( tryTwice "sudo su - xad ls ${DD}/* |grep $REBUILT |egrep -iv 'last login|no such file'" )
 	if [ "$fE" != "" ]												# if the edge case flag file exists
 	then
 		echo "This seems to be a special case where the host was rebuilt."
@@ -238,35 +309,23 @@ echo "Checking sizes for $aTL"
 	if [ $m -lt 2 ]													# if only one size found
 	then
 		T=$aTL
-		getPartitionInfo
-		if [ $? -ne 0 ]
-		then
-			getPartitionInfo
-			jumpFail
-		fi
-		getBrokerIDs
-		if [ $? -ne 0 ]
-		then
-			getBrokerIDs
-			jumpFail
-		fi
+		getPartitionInfo;  if [ $? -ne 0 ]; then getPartitionInfo;  jumpFail;  fi				# get partition info or die
+		getBrokerIDs;      if [ $? -ne 0 ]; then getBrokerIDs;      jumpFail;  fi				# get Broker IDs or die
 		Pn=$( grep "${aTL}-[0-9]" kafka_DiskUsage.out |head -1 |awk -F\- '{print $NF}' )			# get the partition number
 		Isr=$( grep "Partition: $Pn" kafka_partitionInfo.out |awk '{print $NF}' )				# get the 2 Broker IDs listed in Isr:
 		BID_1=$( echo $Isr |awk -F, '{print $1}' )								# isolate the first Broker ID
 		BID_2=$( echo $Isr |awk -F, '{print $2}' )								# and the second BID
-		newBn=$( egrep -v '${BID_1}|${BID_2}' kafka_partitionInfo.out |head -1 |awk '{print $6}' )		# get the new Broker ID number
+		newBn=$( egrep -v '${BID_1}|${BID_2}' kafka_partitionInfo.out |head -1 |awk '{print $6}' )		# get a new Broker ID number
+		if [ "$newBn" = "" ]; then exit 1; fi									# bail if nothing found.
 		NHN=$( grep "^${newBn}:ec2" kafka_BIDs.out |awk -F: '{print $2}' )					# get the new hostname
+		if [ "$NHN" = "" ]; then exit 1; fi									# bail if nothing found
 		OHN=$HN													# save original host name
 		HN=$NHN													# use new host name
 		getDuInfo												# get more disk usage info for this topic from new host
 		HN=$OHN													# back to the problem host
 		S=$( grep "${aTL}-[0-9]" kafka_DiskUsage.out |awk '{print $1}' )					# get Sizes for this topic
 		m=$( echo $S |wc -w |awk '{print $1}' )									# number of Sizes found
-		if [ $m -lt 2 ]												# verify we now have more than one size
-		then
-			echo "Failed to get more than 1 partition"
-			exit 0
-		fi
+		if [ $m -lt 2 ]; then  echo "Failed to get more than 1 partition";  exit 0;  fi				# verify we now have more than one size
 	fi
 # split size into number and scale
 	j=0
@@ -299,10 +358,7 @@ echo "Checking sizes for $aTL"
 	ls=${SL[0]}
 	for (( i=1; i<$m; i++ ))
 	do
-		if [ $ls -lt ${SL[$i]} ]
-		then
-			ls=${SL[$i]}
-		fi
+		if [ $ls -lt ${SL[$i]} ]; then ls=${SL[$i]}; fi
 	done
 	pos=$( Calc "( $ls * $partitionSizeDelta ) / 100" )								# Percent Of Size
 	lsl=$( Calc "$ls - $pos" )											# Lower Size Limit
@@ -361,26 +417,15 @@ function checkHost
 
 # get disk usage info for topic partitions.
 	rm -f kafka_DiskUsage.out											# remove old file
-	if [ -e "kafka_DiskUsage.out" ]
-	then
-		return 1
-	fi
+	if [ -e "kafka_DiskUsage.out" ]; then return 1; fi
 	getDuInfo
 # now to check any topics that are 10G or larger for possible misconfigurations shown by radically different sizes.
 	nL=$( wc -l kafka_DiskUsage.out |awk '{print $1}' )
-	if [ $nL -le 1 ]
-	then
-		echo "no kafka partitions on this host."
-		exit 1
-	fi
+	if [ $nL -le 1 ];  then  echo "no kafka partitions on this host.";  exit 1;  fi
 # get list of topics having size in the Gb range with no fractional part ( >= 10G )
 	nL2=$( Calc "$nL - 1" )
 	TL=$( head -$nL2 kafka_DiskUsage.out |grep "[0-9]G " |grep -v "[0-9]\.[0-9]" |sort -u - |awk '{print $2}' |awk -F\/ '{print $NF}' )
-	if [ "$TL" = "" ]
-	then
-		echo "Could not find any large partitions on this host."
-		exit 1
-	fi
+	if [ "$TL" = "" ];  then  echo "Could not find any large partitions on this host.";  exit 1;  fi
 	for i in $TL
 	do
 		TLl=$( echo $(( $( echo $i |awk -F\- '{print $NF}'|wc -c |awk '{print $1}' ) + 1 )) )			# TLl = length of $i string following the last '-' character
@@ -390,11 +435,7 @@ function checkHost
 		checkSize
 	done
 # now that we know there are no misconfiguration situations to escalate, clear out and reload DU info.
-	rm -f kafka_DiskUsage.out
-	if [ -e "kafka_DiskUsage.out" ]
-	then
-		return 1
-	fi
+	rm -f kafka_DiskUsage.out;  if [ -e "kafka_DiskUsage.out" ]; then return 1; fi					# remove old file or return failure
 	getDuInfo
 echo "HN=$HN"
 # get the largest disk usage topic
@@ -405,23 +446,14 @@ echo "HN=$HN"
 	then
 # get list of hosts with 3 of this topic partitions for possible use in picker function.
 		getPartitionInfo
-		if [ !-f kafka_partitionInfo.out ]
-		then
-			getPartitionInfo
-		fi
+		if [ !-f kafka_partitionInfo.out ]; then getPartitionInfo; fi
 		if [ -f kafka_partitionInfo.out ]
 		then
 			getBrokerIDs
-			if [ !-f kafka_BIDs.out ]
-			then
-				getBrokerIDs
-			fi
+			if [ !-f kafka_BIDs.out ]; then getBrokerIDs; fi
 		fi
 		rm -f kafka_hosts.out
-		if [ -e "kafka_hosts.out" ]
-		then
-			return 1
-		fi
+		if [ -e "kafka_hosts.out" ]; then return 1; fi
 		if [ -f kafka_partitionInfo.out -a -f kafka_BIDs.out ]
 		then
 			for i in $( cat kafka_BIDs.out )
@@ -465,11 +497,7 @@ function picker
 
 function findHost
 {	HN=$( er -e %kafka${RN} |grep $H )									# start with the hostname from the email
-	if [ $? -ne 0 ]
-	then
-		HN=$( er -e %kafka${RN} |grep $H )
-		jumpFail
-	fi
+	if [ $? -ne 0 ];  then  HN=$( er -e %kafka${RN} |grep $H );  jumpFail;  fi				# retry on fail or die
 	edc=$( tryTwice "cat /etc/defaultcluster | grep -v \"Last login\"" )
 	echo "DefaultCluster: $edc"
 	ZKS=$( tryTwice "er -e %${edc}:ZK_CONNECT_STRING  | grep -v \"Last login\"" )
@@ -529,11 +557,7 @@ function getSecs
 }
 
 function waitTime
-{	while [ $LR -gt $ct ]
-	do
-		sleep $sleepIncrement
-		getSecs
-	done
+{	while [ $LR -gt $ct ];  do  sleep $sleepIncrement;  getSecs;  done
 }
 
 function tryFix
@@ -553,10 +577,11 @@ Comment to be added to SalesForce Ticket:
         Proposed Retention Value:       $NRV
         /data % full:                   $DF
 
+Please cut the above information and add it as a comment in the SalesForce Ticket.
+Press enter ONLY AFTER you have done that.
+            ---- -----
+
 EOT
-	echo "Please cut the above information and add it as a comment in the SalesForce Ticket."
-	echo "Press enter ONLY AFTER you have done that."
-	echo "            ---- -----"
 	read Reply
 	getSecs
 	ctis=$ct
@@ -576,27 +601,18 @@ EOT
 					setRetentionValue
 				;;
 			"N" | "n")	echo "Canceling the intent to make changes."
-					if [ $Lvl -eq 1 ]
-					then
-						exit 0									# nothing more to be done
-					fi
+					if [ $Lvl -eq 1 ]; then exit 0; fi						# nothing more to be done
 					lvlDown
 					getDF
 				;;
 			*)		echo "STOP THAT!!!!"
-					if [ $Lvl -eq 1 ]
-					then
-						exit 1
-					fi
+					if [ $Lvl -eq 1 ]; then exit 1; fi
 					lvlDown
 					getDF
 			esac
 		;;
 	"N" | "n")	echo "OK - I won't make any changes."
-			if [ $Lvl -eq 1 ]
-			then
-				exit 0											# nothing more to be done
-			fi
+			if [ $Lvl -eq 1 ]; then exit 0; fi								# nothing more to be done
 			lvlDown
 			getDF
 		;;
@@ -609,24 +625,13 @@ EOT
 #  Start of main program.  #
 #                          #
 ############################
-B=$( ssh $AWSHost 'pwd' )											# verify that we can reach this host
-if [ $? -ne 0 ]														# might fail once due to network timeout
-then
-	B=$( ssh $AWSHost 'pwd' )
-	jumpFail
-fi
-if [ "$B" != "/home/$USER" ]												# check expected return string
-then
-	echo "could not connect to $AWSHost"
-	exit 0
-fi
+HN=$AWSHost
+B=$( tryTwice "pwd" )												# verify that we can reach this host
+if [ "$B" != "/home/$USER" ];  then  echo "could not connect to $AWSHost";  exit 0;  fi					# check expected return string
 H=$AWSHost														# we'll attempt to use this as our initial host
 rm -f kafka_connect.txt
-if [ -e "kafka_connect.txt" ]
-then
-	exit 1
-fi
-findHost														
+if [ -e "kafka_connect.txt" ]; then exit 1; fi
+findHost
 echo "Using kafka host $HN"												# Got a good host
 tryFix															# see if we can proceed
 
@@ -674,4 +679,7 @@ then
 		echo "Failed to reduce the data volume size below alert threshold"
 		echo "Must escalate to xAd."
 	fi
+else
+	echo "Something went wrong. Please investigate."
+	echo "Then either re-try or escalate."
 fi
