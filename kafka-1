@@ -50,7 +50,11 @@ then
 	eDC=$( cat /etc/defaultcluster )										# get the name of the default cluster for this bastion server
 	Cn=$( echo $eDC |cut -c $(( $( echo $eDC |wc -c ) -3 ))- )							# isolate the cluster number from the default cluster name
 	case $Regn in
+<<<<<<< HEAD
 		"US")	RCn="2 101 701"; if [ $Cn -ne 4 -a $Cn -ne 101 -a $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+=======
+		"US")	RCn="4 101 701"; if [ $Cn -ne 4 -a $Cn -ne 101 -a $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+>>>>>>> refs/remotes/origin/master
 			;;
 		"AP")	RCn=201; if [ $Cn -ne 201 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
