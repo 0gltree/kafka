@@ -25,6 +25,7 @@ APNE1="201"		# ap-northeast-1  Asia Pacific (Tokyo)            200 - 299	kafka20
 EUW1="301"		# eu-west-1       EU (Ireland)                    300 - 399	kafka301
 USW2="701"		# us-west-2       US West (Oregon)                700 - 799	kafka701
 
+BH[2]="bastion.us-east-1.xad.com"
 BH[101]="bastion.us-east-1.xad.com"
 BH[201]="bastion.ap-northeast-1.xad.com"
 BH[301]="bastion.eu-west-1.xad.com"
@@ -49,7 +50,7 @@ then
 	eDC=$( cat /etc/defaultcluster )										# get the name of the default cluster for this bastion server
 	Cn=$( echo $eDC |cut -c $(( $( echo $eDC |wc -c ) -3 ))- )							# isolate the cluster number from the default cluster name
 	case $Regn in
-		"US")	RCn="4 101 701"; if [ $Cn -ne 4 -a $Cn -ne 101 -a $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+		"US")	RCn="2 101 701"; if [ $Cn -ne 4 -a $Cn -ne 101 -a $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
 		"AP")	RCn=201; if [ $Cn -ne 201 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
