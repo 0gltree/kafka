@@ -25,7 +25,6 @@ APNE1="201"		# ap-northeast-1  Asia Pacific (Tokyo)            200 - 299	kafka20
 EUW1="301"		# eu-west-1       EU (Ireland)                    300 - 399	kafka301
 USW2="701"		# us-west-2       US West (Oregon)                700 - 799	kafka701
 
-BH[2]="bastion.us-east-1.xad.com"
 BH[101]="bastion.us-east-1.xad.com"
 BH[201]="bastion.ap-northeast-1.xad.com"
 BH[301]="bastion.eu-west-1.xad.com"
@@ -45,12 +44,23 @@ read AWSHost														# get input from operator
 pre=$(echo $AWSHost |cut -c -3)												# isolate the first 3 characters
 if [ "$pre" != "ec2" ]													# if not "ec2" then should be translated
 then
+	if [ "$pre" != "xAd" ]
+	then
+		echo "expecting xAd- or ec2- type of server name"
+		echo "aborting due to unknown type"
+		exit 1
+	fi
 	Ipa=$( echo $AWSHost |awk -F\- '{print $NF}' |awk -F\. '{print $1"-"$2"-"$3"-"$4}' )				# get the numeric tuples as hyphenated IP address
 	Regn=$( echo $AWSHost |awk -F\- '{print $3}' )									# get 2 letter region
+	if [ "$Regn" != "US" -a "$Regn" != "AP" -a "$Regn" != "EU" -a "$Regn" != "CN" ]
+	then
+		echo "expected US, AP,EU, or CN but got $Regn - aborting!"
+		exit 1
+	fi
 	eDC=$( cat /etc/defaultcluster )										# get the name of the default cluster for this bastion server
 	Cn=$( echo $eDC |cut -c $(( $( echo $eDC |wc -c ) -3 ))- )							# isolate the cluster number from the default cluster name
 	case $Regn in
-		"US")	RCn="2 101 701"; if [ $Cn -ne 4 -a $Cn -ne 101 -a $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+		"US")	RCn="101 701"; if [ $Cn -ne 101 -a $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
 		"AP")	RCn=201; if [ $Cn -ne 201 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
@@ -99,7 +109,7 @@ then
 			tHost=$( echo $Pnodes |grep $newHost )
 			if [ "$tHost" = "" ]
 			then
-				echo "No good"
+				echo "Unable to determine correct Kafka host"
 				exit 1
 			fi
 			Pnodes=$newHost
