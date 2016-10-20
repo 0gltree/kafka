@@ -121,13 +121,6 @@ case "$R" in
 esac
 echo "$R -> $RN"
 
-XHD="/media/ephemeral0/xad"
-BD8="${XHD}/enigma/kafka/bin"												# Bin Dir version-8
-DD8="/data/kafka_data"													# Data Dir version-8
-CD8="${XHD}/enigma/conf"												# Config Dir version-8
-BD10="/media/ephemeral0/kafka/"												# Bin Dir version-10
-DD10="/media/ephemeral1/kafka-data"											# Data Dir version-10
-CD10="/media/ephemeral0/kafka-conf"											# Config Dir version-10
 
 #############################
 #                           #
@@ -544,7 +537,7 @@ function lvlDown
 	Lvl=$( Calc "$Lvl - 1" )											# adjust level down one
 }
 
-function getSecs													get number of seconds since 1/1/1900
+function getSecs													# get number of seconds since 1/1/1900
 {	ct=$( date "+%s" )
 	echo "LR=$LR   ct=$ct"
 }
