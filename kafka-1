@@ -1,5 +1,6 @@
 #!/bin/bash
 
+# express Intellectual Property Rights
 cat <<EOT
 
 #########################################
@@ -18,24 +19,6 @@ EOT
 dN=$( dirname $0 )													# path to config file based on calling path to this file.
 . $dN/kafka.cfg														# source the config file
 
-
-Lvl=1															# initial Level
-USE1="101"		# us-east-1       US East (N. Virginia)           000 - 199	kafka101
-APNE1="201"		# ap-northeast-1  Asia Pacific (Tokyo)            200 - 299	kafka201
-EUW1="301"		# eu-west-1       EU (Ireland)                    300 - 399	kafka301
-USW2="701"		# us-west-2       US West (Oregon)                700 - 799	kafka701
-
-BH[101]="bastion.us-east-1.xad.com"
-BH[201]="bastion.ap-northeast-1.xad.com"
-BH[301]="bastion.eu-west-1.xad.com"
-BH[701]="bastion.us-west-2.xad.com"
-BH[801]="bastion.cn-north-1.xad.com"
-compute1=101
-useast1=101
-apnortheast1=201
-euwest1=301
-uswest2=701
-cnnorth1=801
 
 echo "Please tell me the host server to check."										# for now we'll ask for hostname
 read AWSHost														# get input from operator
@@ -62,7 +45,8 @@ then
 	case $Regn in
 		"US")	RCn="101 701"; if [ $Cn -ne 101 -a $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
-		"AP")	RCn=201; if [ $Cn -ne 201 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+		"AP")	RCn=201; if [ $Cn -ne 201 ]; then echo "You will need tof [ "$Regn" != "US" -a "$Regn" != "AP" -a "$Regn" != "EU" -a "$Regn" != "CN" ]
+ logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
 		"EU")	RCn=301; if [ $Cn -ne 301 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
@@ -169,7 +153,7 @@ function tryTwice													# try to perform a remote command at most 2 times
 	nt=0														# init try count for while loop
 	while [ $err -ne 0  -a  $nt -ne 2 ]
 	do
-		Z=$( ssh $HN "$1" )
+		Z=$( ssh $HN "$1" )											# run the command
 		err=$?													# grab the returned status code
 		nt=$( Calc "nt + 1" )											# increment number of tries count
 	done
@@ -185,8 +169,8 @@ function tryTwice													# try to perform a remote command at most 2 times
 }
 
 function setVdirs
-{	V=$( tryTwice "rpm -q -a |grep kafka |egrep 'main|conf' |awk -F- '{print \$4}' |head -1" )
-	if [ "$V" = "0.8" ]
+{	V=$( tryTwice "rpm -q -a |grep kafka |egrep 'main|conf' |awk -F\. '{print \$2}' |awk -F- '{print \$1}' |head -1" )
+	if [ "$V" = "8" ]
 	then
 		DD=$DD8;	BD=$BD8;	CD=$CD8
 	else
@@ -203,6 +187,7 @@ function getDF
 		return 0
 	else
 		echo "problem getting DF of /data"
+		DF=-1
 		return 1
 	fi
 }
@@ -340,8 +325,7 @@ echo "Checking sizes for $aTL"
 	j=0
 	for i in $S
 	do
-		Sl=$( echo $i |wc -c |awk '{print $1}' )
-		k=$( Calc "$Sl - 2" )
+
 		SL[$j]=$( echo $i |cut -c 1-$k - )									# numeric portion
 		round
 		k=$( echo $(( $k + 1 )) )
@@ -390,10 +374,10 @@ function checkHost
 {	err=0
 	setVdirs
 # get percent disk full information.
-	getDF
+	getDF														# uses tryTwice
 	if [ $DF -eq -1 ]
 	then
-		getDF
+		getDF													# so this makes 4 attempts
 		if [ $DF -eq -1 ]
 		then
 			echo "Failed to get \"Disk Full\" info: DF=$DF"
@@ -560,7 +544,7 @@ function lvlDown
 	Lvl=$( Calc "$Lvl - 1" )											# adjust level down one
 }
 
-function getSecs
+function getSecs													get number of seconds since 1/1/1900
 {	ct=$( date "+%s" )
 	echo "LR=$LR   ct=$ct"
 }
@@ -569,9 +553,17 @@ function waitTime
 {	while [ $LR -gt $ct ];  do  sleep $sleepIncrement;  getSecs;  done
 }
 
-function tryFix
+function tryFix														# see if we can adjust the retention value
 {	getRetentionValue
 	NRV=$( Calc "$RV - ( ( $RV * $retentionTimeDelta ) / 100 )" )							# New Retention Value
+	if [ $NRV -le 0 -o $NRV -ge $RV ]
+	then
+		echo "new retention not acceptable"
+		echo "current value: $RV"
+		echo "new retention: $NRV"
+		echo "Do not know how to proceed"
+		exit 1
+	fi
 
 # add comment in ticket clearly stating the "Topic", ZooKeeper String, current Retention Value, and proposed new RV
 	cat <<EOT |tee -a "kafka_connect.txt"
@@ -638,9 +630,9 @@ HN=$AWSHost
 B=$( tryTwice "pwd" )													# verify that we can reach this host
 if [ "$B" != "/home/$USER" ];  then  echo "could not connect to $AWSHost";  exit 0;  fi					# check expected return string
 H=$AWSHost														# we'll attempt to use this as our initial host
-rm -f kafka_connect.txt
+rm -f kafka_connect.txt													# remove old file for appending new info
 if [ -e "kafka_connect.txt" ]; then exit 1; fi
-findHost
+findHost														# find host where we can verify and adjust
 echo "Using kafka host $HN"												# Got a good host
 tryFix															# see if we can proceed
 
@@ -650,45 +642,50 @@ tryFix															# see if we can proceed
 # we should consider doing the same for the next largest partition(s).
 # exactly what that period of time should be remains a gray area, so I will assume that after 20 minutes, we will consider this a viable option.
 # but for now we want to monitor the system, to see that the size of the altered partition(s) do indeed drop.
-# if they do not change then go immediately to the next largest.
+# if they do not change, or if df %used increases, then go immediately to the next largest.
 
-if [ $? -eq 0 ]
-then
-	getSecs
+if [ $? -eq 0 ]														# test return code from tryFix
+then															# good to continue
+	getSecs														# get current time as seconds since 1/1/1900_00:00
 	quitTime=$( Calc "$ct + $qet" )
 	nextLvlT=$( Calc "$ct + $sleepTime" )
 	getDF
 	while [ $DF -gt $ADFL -a $ct -lt $quitTime ]
 	do
-		LR=$( Calc "$ct + $sleepTime" )
+		LR=$( Calc "$ct + $sleepTime" )										# set next wait time
 		echo "DF=$DF %"
-		waitTime
+		waitTime												# wait for next check
 		if [ $Lvl -eq 1 ]
 		then
-			ODF=$DF
-			getDF
-			if [ $DF -ge $ODF ]
+			ODF=$DF												# save previous DF
+			getDF												# get new DF
+			if [ $DF -ge $ODF ]										# if new DF is greater than or equal to old DF
 			then
-				lvlUp
-				getTopic
-				tryFix
+				lvlUp											# save info and bump level
+				getTopic										# find next largest topic
+				tryFix											# see if OK to make change
 			fi
 		else
-			getDF
+			getDF												# refresh DF info
 		fi
 	done
-	resetRV
+	resetRV														# reset the retention value for this topic
 	if [ $Lvl -eq 2 ]
 	then
 		lvlDown
-		resetRV
+		resetRV													# reset the retention value for this topic
+	fi
+	getDF
+	if [ $DF -gt 0 ]
+	then
+		echo "Data Volume = $DF %used"										# closing display of disk usage
 	fi
 	if [ $DF -ge $ADFL ]
 	then
 		echo "Failed to reduce the data volume size below alert threshold"
 		echo "Must escalate to xAd."
 	fi
-else
+else															# tryFix returned error
 	echo "Something went wrong. Please investigate."
 	echo "Then either re-try or escalate."
 fi
