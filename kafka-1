@@ -291,7 +291,7 @@ function checkSize
 {
 echo "Checking sizes for $aTL"
 # we need to see if partition sizes are all nearly the same or if not escalate to xAD.
-	S=$( grep "${aTL}-[0-9]" kafka_DiskUsage.out |awk '{print $1}' )						# get sizes only
+	S=$( grep "/${aTL}-[0-9]" kafka_DiskUsage.out |awk '{print $1}' )						# get sizes only
 	m=$( echo $S |wc -w |awk '{print $1}' )										# how many sizes do we have to compare
 	if [ $m -lt 2 ]													# if only one size found
 	then
@@ -318,11 +318,14 @@ echo "Checking sizes for $aTL"
 	j=0
 	for i in $S
 	do
-
+		k=$( echo $i |wc -c )
+		k=$( Calc "$k - 2" )
 		SL[$j]=$( echo $i |cut -c 1-$k - )									# numeric portion
+echo "SL[$j]=${SL[$j]}  k=$k"
 		round
 		k=$( echo $(( $k + 1 )) )
 		SC[$j]=$( echo $i |cut -c ${k}- - )									# scale (K, M, or G)
+echo "SC[$j]=${SC[$j]}  k=$k"
 		j=$( Calc "$j + 1" )
 	done
 	j=$( Calc "$j - 1" )
@@ -333,6 +336,7 @@ echo "Checking sizes for $aTL"
 		n=$( Calc "$i + 1" )
 		if [ "${SC[$i]}" != "${SC[$n]}" ]
 		then
+echo "${SC[$i]} not eq ${SC[$n]}"
 			isItRebuilt
 			echo "partition sizes too far apart"
 			echo "Need to escalate!"
@@ -352,6 +356,7 @@ echo "Checking sizes for $aTL"
 	do
 		if [ ${SL[$i]} -lt $lsl ]
 		then
+echo "${SL[$i]} lessthan $lsl"
 			isItRebuilt
 			if [ $? -eq 1 ]
 			then
