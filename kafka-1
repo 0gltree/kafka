@@ -320,11 +320,11 @@ echo "Checking sizes for $aTL"
 		k=$( echo $i |wc -c )
 		k=$( Calc "$k - 2" )
 		SL[$j]=$( echo $i |cut -c 1-$k - )									# numeric portion
-echo "SL[$j]=${SL[$j]}  k=$k"
+# echo "SL[$j]=${SL[$j]}  k=$k"
 		round
 		k=$( echo $(( $k + 1 )) )
 		SC[$j]=$( echo $i |cut -c ${k}- - )									# scale (K, M, or G)
-echo "SC[$j]=${SC[$j]}  k=$k"
+# echo "SC[$j]=${SC[$j]}  k=$k"
 		j=$( Calc "$j + 1" )
 	done
 	j=$( Calc "$j - 1" )
@@ -335,7 +335,7 @@ echo "SC[$j]=${SC[$j]}  k=$k"
 		n=$( Calc "$i + 1" )
 		if [ "${SC[$i]}" != "${SC[$n]}" ]
 		then
-echo "${SC[$i]} not eq ${SC[$n]}"
+# echo "${SC[$i]} not eq ${SC[$n]}"
 			isItRebuilt
 			echo "partition sizes too far apart"
 			echo "Need to escalate!"
@@ -355,7 +355,7 @@ echo "${SC[$i]} not eq ${SC[$n]}"
 	do
 		if [ ${SL[$i]} -lt $lsl ]
 		then
-echo "${SL[$i]} lessthan $lsl"
+# echo "${SL[$i]} lessthan $lsl"
 			isItRebuilt
 			if [ $? -eq 1 ]
 			then
