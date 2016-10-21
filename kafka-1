@@ -100,18 +100,16 @@ then
 	fi
 	AWSHost=$Pnodes
 	echo "Using $AWSHost"
-else
-# we have:                        "ec2-52-90-24-184.compute-1.amazonaws.com"
+else															# we have ec2-<IP> form but still need to verify reachability
 	eDC=$( cat /etc/defaultcluster )										# get the name of the default cluster for this bastion server
 	Cn=$( echo $eDC |cut -c $(( $( echo $eDC |wc -c ) -3 ))- )							# isolate the cluster number from the default cluster name
 	R=$(echo $AWSHost |awk -F\. '{print $2}' |sed "s/-//g")
-echo "R=$R  ${!R}  Cn=$Cn  ${BH[${!R}]}"
+# echo "R=$R  ${!R}  Cn=$Cn  ${BH[${!R}]}"
 	if [ "${!R}" != "$Cn" ]
 	then
 		echo "You must login to ${BH[${!R}]} and run kafka-1 from there"
 		exit 0
 	fi
-exit 0
 fi
 
 
