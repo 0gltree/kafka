@@ -45,8 +45,7 @@ then
 	case $Regn in
 		"US")	RCn="101 701"; if [ $Cn -ne 101 -a $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
-		"AP")	RCn=201; if [ $Cn -ne 201 ]; then echo "You will need tof [ "$Regn" != "US" -a "$Regn" != "AP" -a "$Regn" != "EU" -a "$Regn" != "CN" ]
- logout of here and login to ${BH[$Cn]}"; exit 0; fi
+		"AP")	RCn=201; if [ $Cn -ne 201 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
 		"EU")	RCn=301; if [ $Cn -ne 301 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
 			;;
