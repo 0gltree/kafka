@@ -37,7 +37,7 @@ then
 	Regn=$( echo $AWSHost |awk -F\- '{print $3}' )									# get 2 letter region
 	if [ "$Regn" != "US" -a "$Regn" != "AP" -a "$Regn" != "EU" -a "$Regn" != "CN" ]
 	then
-		echo "expected US, AP,EU, or CN but got $Regn - aborting!"
+		echo "expected US, AP, EU, or CN but got $Regn - aborting!"
 		exit 1
 	fi
 	eDC=$( cat /etc/defaultcluster )										# get the name of the default cluster for this bastion server
@@ -70,9 +70,9 @@ then
 			for i in $Pnodes
 			do
 				iN=$(echo $i |awk -F. '{print $2}' |sed "s/-//g")
-				if [ ${!iN} -ne $Cn ]
+				if [ ${!iN} -ne $Cn ]								# if not in this region
 				then
-					cR=$(ssh -A ${BH[${!iN}]} "ssh $i \"df -h |grep -i 'data' |tail -1\"")
+					cR=$(ssh -A ${BH[${!iN}]} "ssh $i \"df -h |grep -i 'data' |tail -1\"")	# jump through bastion server in correct region to get DF info
 				else
 					cR=$(ssh $i "df -h |grep -i 'data' |tail -1")
 				fi
@@ -81,7 +81,7 @@ then
 				then
 					if [ ${!iN} -ne $Cn ]
 					then
-						echo "You must login to ${BH[$a]} and run kafka-1 from there"
+						echo "You must login to ${BH[${!iN}]} and run kafka-1 from there"	# explain need to use bastion server in correct region
 						exit 0
 					else
 						newHost=$i
@@ -100,6 +100,18 @@ then
 	fi
 	AWSHost=$Pnodes
 	echo "Using $AWSHost"
+else
+# we have:                        "ec2-52-90-24-184.compute-1.amazonaws.com"
+	eDC=$( cat /etc/defaultcluster )										# get the name of the default cluster for this bastion server
+	Cn=$( echo $eDC |cut -c $(( $( echo $eDC |wc -c ) -3 ))- )							# isolate the cluster number from the default cluster name
+	R=$(echo $AWSHost |awk -F\. '{print $2}' |sed "s/-//g")
+echo "R=$R  ${!R}  Cn=$Cn  ${BH[${!R}]}"
+	if [ "${!R}" != "$Cn" ]
+	then
+		echo "You must login to ${BH[${!R}]} and run kafka-1 from there"
+		exit 0
+	fi
+exit 0
 fi
 
 
@@ -156,7 +168,7 @@ function tryTwice													# try to perform a remote command at most 2 times
 		echo "Suggest checking remote access first, then retry script." >/dev/stderr
 		exit 1
 	else
-		echo $Z
+		echo $Z													# for calls expecting to assign a variable to the results
 	fi
 }
 
@@ -541,7 +553,7 @@ function lvlDown
 	Lvl=$( Calc "$Lvl - 1" )											# adjust level down one
 }
 
-function getSecs													# get number of seconds since 1/1/1900
+function getSecs													# get number of seconds since 1/1/1900_00:00
 {	ct=$( date "+%s" )
 	echo "LR=$LR   ct=$ct"
 }
