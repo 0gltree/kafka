@@ -20,6 +20,7 @@ dN=$( dirname $0 )													# path to config file based on calling path to th
 . $dN/kafka.cfg														# source the config file
 
 
+
 echo "Please tell me the host server to check."										# for now we'll ask for hostname
 read AWSHost														# get input from operator
 # Ticket has:  "Host: xAd-Kafka-US-VPC-52.90.24.184"
@@ -107,7 +108,7 @@ else															# we have ec2-<IP> form but still need to verify reachability
 # echo "R=$R  ${!R}  Cn=$Cn  ${BH[${!R}]}"
 	if [ "${!R}" != "$Cn" ]
 	then
-		echo "You must login to ${BH[${!R}]} and run kafka-1 from there"
+		echo "You need to logout of here and login to ${BH[${!R}]} then run kafka-1 from there"
 		exit 0
 	fi
 fi
@@ -171,13 +172,39 @@ function tryTwice													# try to perform a remote command at most 2 times
 }
 
 function setVdirs
-{	V=$( tryTwice "rpm -q -a |grep kafka |egrep 'main|conf' |awk -F\. '{print \$2}' |awk -F- '{print \$1}' |head -1" )
+{	V=$( tryTwice "rpm -q -a |grep kafka |grep conf |awk -F\. '{print \$2}' |awk -F- '{print \$1}' |head -1" )
 	if [ "$V" = "8" ]
 	then
 		DD=$DD8;	BD=$BD8;	CD=$CD8
 	else
 		DD=$DD10;	BD=$BD10;	CD=$CD10
 	fi
+	dP=$(tryTwice "sudo grep log.dir ${CD}/server.properties |grep -v \# |awk -F= '{print \$2}' |sed \"s/,/ /g\"")
+	nDp=$( echo $dP |wc -w |awk '{print $1}')
+	if [ $nDp -gt 1 ]
+	then
+		for i in $dP
+		do
+			nDf=$(tryTwice "sudo ls -al $i |wc -l |awk '{print $1}'")
+			if [ $nDf -gt 12 ]
+			then
+				DD=$i
+				break
+			fi
+		done
+	else
+		res=$(echo $dP |grep xad)
+		if [ "$res" != "" ]
+		then
+			nC=$(echo $dP |wc -c |awk '{print $1}')
+			tC=$( Calc "$nC - 5" )
+			pD=$( echo $dP |cut -c 1-$tC )
+			DD=$( tryTwice "sudo ls -l $pD |grep kafka.data |awk '{print \$NF}'")
+		else
+			DD=$dP
+		fi
+	fi
+	echo "DataDir=$DD   BinDir=$BD   ConfigDir=$CD"
 }
 
 function getDF
@@ -307,7 +334,7 @@ echo "Checking sizes for $aTL"
 		T=$aTL
 		getPartitionInfo;  if [ $? -ne 0 ]; then getPartitionInfo;  jumpFail;  fi				# get partition info or die
 		getBrokerIDs;      if [ $? -ne 0 ]; then getBrokerIDs;      jumpFail;  fi				# get Broker IDs or die
-		Pn=$( grep "${aTL}-[0-9]" kafka_DiskUsage.out |head -1 |awk -F\- '{print $NF}' )			# get the partition number
+		Pn=$( grep "/${aTL}-[0-9]" kafka_DiskUsage.out |head -1 |awk -F\- '{print $NF}' )			# get the partition number
 		Isr=$( grep "Partition: $Pn" kafka_partitionInfo.out |awk '{print $NF}' )				# get the 2 Broker IDs listed in Isr:
 		BID_1=$( echo $Isr |awk -F, '{print $1}' )								# isolate the first Broker ID
 		BID_2=$( echo $Isr |awk -F, '{print $2}' )								# and the second BID
@@ -319,7 +346,7 @@ echo "Checking sizes for $aTL"
 		HN=$NHN													# use new host name
 		getDuInfo												# get more disk usage info for this topic from new host
 		HN=$OHN													# back to the problem host
-		S=$( grep "${aTL}-[0-9]" kafka_DiskUsage.out |awk '{print $1}' )					# get Sizes for this topic
+		S=$( grep "/${aTL}-[0-9]" kafka_DiskUsage.out |awk '{print $1}' )					# get Sizes for this topic
 		m=$( echo $S |wc -w |awk '{print $1}' )									# number of Sizes found
 		if [ $m -lt 2 ]; then  echo "Failed to get more than 1 partition";  exit 0;  fi				# verify we now have more than one size
 	fi
@@ -331,6 +358,7 @@ echo "Checking sizes for $aTL"
 		k=$( Calc "$k - 2" )
 		SL[$j]=$( echo $i |cut -c 1-$k - )									# numeric portion
 # echo "SL[$j]=${SL[$j]}  k=$k"
+# even though we selected partitions to exclude fractional parts, we might get one at 10G or 11G that has another one at only 9.7G so we want to round this one.
 		round
 		k=$( echo $(( $k + 1 )) )
 		SC[$j]=$( echo $i |cut -c ${k}- - )									# scale (K, M, or G)
@@ -527,12 +555,12 @@ function getRetentionValue
 
 function setRetentionValue
 {	echo "$( date ): I am going to change the retention time of $T from $RV to $NRV"
-	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${NRV} '"  )
+#	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${NRV} '"  )
 }
 
 function resetRV
 {	echo "$( date ): I am going to restore the retention value of $T from $NRV to $RV"
-	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${RV} '"  )
+#	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${RV} '"  )
 }
 
 function lvlUp
@@ -590,7 +618,7 @@ Press enter ONLY AFTER you have done that.
             ---- -----
 
 EOT
-	read Reply
+	read Reply													# do not care what it is.
 	getSecs
 	ctis=$ct
 	echo "$ctis" >last_run.txt
