@@ -128,6 +128,8 @@ case "$R" in
 		;;
 	"us-west-2")		RN=$USW2
 		;;
+	"cn-north-1")		RN=$CNN1
+		;;
 esac
 echo "$R -> $RN"
 
@@ -558,8 +560,16 @@ function findHost
 function getRetentionValue
 {
 	R3=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --describe |grep \"Configs:\" '" )
-	R3=$( echo $R3 |sed "s/.Last login.*//" )
-	RV=$( echo $R3 |awk '{print $NF}' |awk -F= '{print $2}' )							# Retention Value
+	isGood=$(echo $R3 |grep "\.ms=")
+	if [ "$isGood" = "" ]
+	then
+		R3=$(tryTwice "sudo su - xad -c 'grep log.retention.hour ${CD}/server.properties'")
+		R3=$(echo $R3 |awk -F= '{print $2}')
+		RV=$(Calc "$R3 * 3600000")
+	else
+		R3=$( echo $R3 |sed "s/.Last login.*//" )
+		RV=$( echo $R3 |awk '{print $NF}' |awk -F= '{print $2}' )							# Retention Value
+	fi
 }
 
 function setRetentionValue
