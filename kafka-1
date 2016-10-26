@@ -219,6 +219,12 @@ function getDF
 	DF=$( tryTwice "$TMPs" )
 	if [ $? -eq 0 ]
 	then
+		if [ "$DF" = "" ]
+		then
+			echo "Couldn't get DF for $DD"
+			echo "Should escalate."
+			exit 0
+		fi
 		echo "$DD DF=${DF} % full"
 		return 0
 	else
