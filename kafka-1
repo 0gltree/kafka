@@ -105,7 +105,7 @@ else															# we have ec2-<IP> form but still need to verify reachability
 	eDC=$( cat /etc/defaultcluster )										# get the name of the default cluster for this bastion server
 	Cn=$( echo $eDC |cut -c $(( $( echo $eDC |wc -c ) -3 ))- )							# isolate the cluster number from the default cluster name
 	R=$(echo $AWSHost |awk -F\. '{print $2}' |sed "s/-//g")
-# echo "R=$R  ${!R}  Cn=$Cn  ${BH[${!R}]}"
+echo "R=$R  ${!R}  Cn=$Cn  ${BH[${!R}]}"
 	if [ "${!R}" != "$Cn" ]
 	then
 		echo "You need to logout of here and login to ${BH[${!R}]} then run kafka-1 from there"
@@ -172,34 +172,39 @@ function tryTwice													# try to perform a remote command at most 2 times
 }
 
 function setVdirs
-{	V=$( tryTwice "rpm -q -a |grep kafka |grep conf |awk -F\. '{print \$2}' |awk -F- '{print \$1}' |head -1" )
+{	V=$( tryTwice "rpm -q -a |grep kafka |grep conf |awk -F\. '{print \$2}' |awk -F- '{print \$1}' |head -1" )	# only one kafka conf install allowed
 	if [ "$V" = "8" ]
 	then
 		DD=$DD8;	BD=$BD8;	CD=$CD8
 	else
 		DD=$DD10;	BD=$BD10;	CD=$CD10
 	fi
-	dP=$(tryTwice "sudo grep log.dir ${CD}/server.properties |grep -v \# |awk -F= '{print \$2}' |sed \"s/,/ /g\"")
-	nDp=$( echo $dP |wc -w |awk '{print $1}')
+	dP=$(tryTwice "sudo grep log.dir ${CD}/server.properties |grep -v \# |awk -F= '{print \$2}' |sed \"s/,/ /g\"")	# data dir must be determined by what is being used
+	nDp=$( echo $dP |wc -w |awk '{print $1}')									# might be more than one data dir specified
 	if [ $nDp -gt 1 ]
-	then
+	then														# find the one with the most files in it
+		oNdF=0
 		for i in $dP
 		do
 			nDf=$(tryTwice "sudo ls -al $i |wc -l |awk '{print $1}'")
-			if [ $nDf -gt 12 ]
+			if [ $nDf -gt 5 ]
 			then
-				DD=$i
-				break
+				if [ $nDf -gt $oNdF ]
+				then
+					DD=$i
+					oNdF=$nDf
+				fi
 			fi
 		done
-	else
+	else														# only one data dir specified in server.properties
 		res=$(echo $dP |grep xad)
-		if [ "$res" != "" ]
+		if [ "$res" != "" ]											# likely to be sybolic link, want direct path
 		then
-			nC=$(echo $dP |wc -c |awk '{print $1}')
-			tC=$( Calc "$nC - 5" )
-			pD=$( echo $dP |cut -c 1-$tC )
-			DD=$( tryTwice "sudo ls -l $pD |grep kafka.data |awk '{print \$NF}'")
+			nC=$(echo $dP |wc -c |awk '{print $1}')								# number of characters in path to data dir
+			nL=$( echo $dP |awk -F/ '{print $NF}' |wc -c |awk '{print $1}')					# number of characters in last dir in path
+			tC=$( Calc "$nC - $nL -1" )									# number of characters in path to parent of data dir
+			pD=$( echo $dP |cut -c 1-$tC )									# parent dir of data dir where we might find link
+			DD=$( tryTwice "sudo ls -l $pD |grep kafka.data |awk '{print \$NF}'")				# get path to true data dir
 		else
 			DD=$dP
 		fi
@@ -383,6 +388,10 @@ echo "Checking sizes for $aTL"
 # compare values: must be within a percentage of the largest size.
 # find largest size.
 	ls=${SL[0]}
+	if [ "$ls" = "" ];
+	then
+		ls=${SL[1]}
+	fi
 	for (( i=1; i<$m; i++ ))
 	do
 		if [ $ls -lt ${SL[$i]} ]; then ls=${SL[$i]}; fi
@@ -555,12 +564,12 @@ function getRetentionValue
 
 function setRetentionValue
 {	echo "$( date ): I am going to change the retention time of $T from $RV to $NRV"
-#	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${NRV} '"  )
+	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${NRV} '"  )
 }
 
 function resetRV
 {	echo "$( date ): I am going to restore the retention value of $T from $NRV to $RV"
-#	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${RV} '"  )
+	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${RV} '"  )
 }
 
 function lvlUp
