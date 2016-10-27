@@ -20,12 +20,18 @@ dN=$( dirname $0 )													# path to config file based on calling path to th
 . $dN/kafka.cfg														# source the config file
 
 
-
-echo "Please tell me the host server to check."										# for now we'll ask for hostname
-read AWSHost														# get input from operator
+if [ -f ~/kafkaHost ]
+then
+	AWSHost=$(cat ~/kafkaHost)
+	echo "read kafkaHost=$AWSHost"
+else
+	echo "Please tell me the host server to check."									# for now we'll ask for hostname
+	read AWSHost													# get input from operator
+fi
 # Ticket has:  "Host: xAd-Kafka-US-VPC-52.90.24.184"
 # we need:                        "ec2-52-90-24-184.compute-1.amazonaws.com"
 pre=$(echo $AWSHost |cut -c -3)												# isolate the first 3 characters
+echo "pre=$pre"
 if [ "$pre" != "ec2" ]													# if not "ec2" then should be translated
 then
 	if [ "$pre" != "xAd" ]
@@ -35,30 +41,38 @@ then
 		exit 1
 	fi
 	Ipa=$( echo $AWSHost |awk -F\- '{print $NF}' |awk -F\. '{print $1"-"$2"-"$3"-"$4}' )				# get the numeric tuples as hyphenated IP address
+echo "Ipa=$Ipa"
 	Regn=$( echo $AWSHost |awk -F\- '{print $3}' )									# get 2 letter region
+echo "Regn=$Regn"
 	if [ "$Regn" != "US" -a "$Regn" != "AP" -a "$Regn" != "EU" -a "$Regn" != "CN" ]
 	then
 		echo "expected US, AP, EU, or CN but got $Regn - aborting!"
 		exit 1
 	fi
 	eDC=$( cat /etc/defaultcluster )										# get the name of the default cluster for this bastion server
+echo "eDC=$eDC"
 	Cn=$( echo $eDC |cut -c $(( $( echo $eDC |wc -c ) -3 ))- )							# isolate the cluster number from the default cluster name
-	case $Regn in
-		"US")	RCn="101 701"; if [ $Cn -ne 101 -a $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
-			;;
-		"AP")	RCn=201; if [ $Cn -ne 201 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
-			;;
-		"EU")	RCn=301; if [ $Cn -ne 301 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
-			;;
-		"W2")	RCn="101 701"; if [ $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
-			;;
-		"CN")	RCn=801; if [ $Cn -ne 801 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
-			;;
-		*)	echo "I don't recognize that region $Regn"; exit 0
-			;;
-	esac
-	Pnodes=$( for i in $RCn;do er -e %kafka$i |grep $Ipa; done )
+echo "Cn=$Cn"
+RCn=${!Regn}
+echo "RCn=$RCn"
+#	case $Regn in
+#		"US")	RCn="101 701"; if [ $Cn -ne 101 -a $Cn -ne 701 ]; then echo "You will need to logout of here and login to ${BH[$Cn]}"; exit 0; fi
+#			;;
+#		"AP")	RCn=201; if [ $Cn -ne $RCn ]; then echo "You will need to logout of here and login to ${BH[$RCn]}"; exit 0; fi
+#			;;
+#		"EU")	RCn=301; if [ $Cn -ne $RCn ]; then echo "You will need to logout of here and login to ${BH[$RCn]}"; exit 0; fi
+#			;;
+#		"W2")	RCn="101 701"; if [ $Cn -ne $RCn ]; then echo "You will need to logout of here and login to ${BH[$RCn]}"; exit 0; fi
+#			;;
+#		"CN")	RCn=801; if [ $Cn -ne $RCn ]; then echo "You will need to logout of here and login to ${BH[$RCn]}"; exit 0; fi
+#			;;
+#		*)	echo "I don't recognize that region $Regn"; exit 0
+#			;;
+#	esac
+echo "RCn=$RCn"
+	Pnodes=$( for i in $RCn;do er -e %{kafka$i} |grep $Ipa; done )
 	nPn=$( echo $Pnodes |wc -w |awk '{print $1}' )
+echo "nPn=$nPn  Pnodes=$Pnodes"
 	if [ $nPn -eq 0 ]
 	then
 		echo "Cannot find a host with that IP"
@@ -78,7 +92,7 @@ then
 					cR=$(ssh $i "df -h |grep -i 'data' |tail -1")
 				fi
 				pDf=$(echo $cR |awk '{print $5}' |awk -F\% '{print $1}')			# isolate the numric value only
-				if [ $pDf -ge 80 ]
+				if [ $pDf -ge $ADFL ]
 				then
 					if [ ${!iN} -ne $Cn ]
 					then
@@ -100,16 +114,20 @@ then
 		fi
 	fi
 	AWSHost=$Pnodes
+echo "AWSHost=$AWSHost"
 	echo "Using $AWSHost"
 else															# we have ec2-<IP> form but still need to verify reachability
 	eDC=$( cat /etc/defaultcluster )										# get the name of the default cluster for this bastion server
 	Cn=$( echo $eDC |cut -c $(( $( echo $eDC |wc -c ) -3 ))- )							# isolate the cluster number from the default cluster name
 	R=$(echo $AWSHost |awk -F\. '{print $2}' |sed "s/-//g")
 echo "R=$R  ${!R}  Cn=$Cn  ${BH[${!R}]}"
+# ec2-54-222-183-126.cn-north-1.compute.amazonaws.com.cn
+# R=cnnorth1  801  Cn=101  ec2-54-222-175-94.cn-north-1.compute.amazonaws.com.cn
+# You need to logout of here and login to ec2-54-222-175-94.cn-north-1.compute.amazonaws.com.cn then run kafka-1 from there
 	if [ "${!R}" != "$Cn" ]
 	then
 		echo "You need to logout of here and login to ${BH[${!R}]} then run kafka-1 from there"
-		exit 0
+#		exit 0
 	fi
 fi
 
@@ -131,8 +149,24 @@ case "$R" in
 	"cn-north-1")		RN=$CNN1
 		;;
 esac
-echo "$R -> $RN"
-
+echo "$R -> $RN"						# us-west-2 -> 701
+nB=$(echo ${BH[$RN]} |wc -w |awk '{print $1}')
+# echo "nB=$nB"
+rI=$(echo $(( $RANDOM % $nB +1 )) )
+# echo "rI=$rI"
+bastion=$(echo "${BH[$RN]}" |head -$rI |tail -1)
+echo "bastion=$bastion"
+# echo "BS=${BH[$RN]}"
+# bastion=${BH[$RN]}
+if [ "$eDC" != "bastion$RN" ]
+then
+	echo "Transferring to $bastion"
+	scp kafka[.-][c1]* ${bastion}:~
+	ssh $bastion "/bin/echo -n $AWSHost >kafkaHost"
+	ssh -A $bastion ~/kafka-1
+	ssh $bastion "rm ~/*"
+	exit 0
+fi
 
 #############################
 #                           #
