@@ -87,9 +87,9 @@ echo "nPn=$nPn  Pnodes=$Pnodes"
 				iN=$(echo $i |awk -F. '{print $2}' |sed "s/-//g")
 				if [ ${!iN} -ne $Cn ]								# if not in this region
 				then
-					cR=$(ssh -A ${BH[${!iN}]} "ssh $i \"df -h |grep -i 'data' |tail -1\"")	# jump through bastion server in correct region to get DF info
+					cR=$(ssh -A ${BH[${!iN}]} "ssh -A $i \"df -h |grep -i 'data' |tail -1\"")	# jump through bastion server in correct region to get DF info
 				else
-					cR=$(ssh $i "df -h |grep -i 'data' |tail -1")
+					cR=$(ssh -A $i "df -h |grep -i 'data' |tail -1")
 				fi
 				pDf=$(echo $cR |awk '{print $5}' |awk -F\% '{print $1}')			# isolate the numric value only
 				if [ $pDf -ge $ADFL ]
@@ -162,9 +162,9 @@ if [ "$eDC" != "bastion$RN" ]
 then
 	echo "Transferring to $bastion"
 	scp kafka[.-][c1]* ${bastion}:~
-	ssh $bastion "/bin/echo -n $AWSHost >kafkaHost"
+	ssh -A $bastion "/bin/echo -n $AWSHost >kafkaHost"
 	ssh -A $bastion ~/kafka-1
-	ssh $bastion "rm ~/*"
+	ssh -A $bastion "rm ~/*"
 	exit 0
 fi
 
@@ -192,7 +192,7 @@ function tryTwice													# try to perform a remote command at most 2 times
 	nt=0														# init try count for while loop
 	while [ $err -ne 0  -a  $nt -ne 2 ]
 	do
-		Z=$( ssh $HN "$1" )											# run the command
+		Z=$( ssh -A $HN "$1" )											# run the command
 		err=$?													# grab the returned status code
 		nt=$( Calc "nt + 1" )											# increment number of tries count
 	done
