@@ -66,7 +66,7 @@ then
 				iN=$(echo $i |awk -F. '{print $2}' |sed "s/-//g")
 				if [ ${!iN} -ne $Cn ]									# if not in this region
 				then
-					cR=$(ssh -A -oStrictHostKeyChecking=no ${BH[${!iN}]} "ssh -A $i \"df -h |grep -i 'data' |tail -1\"")	# jump through bastion server in correct region to get DF info
+					cR=$(ssh -A -oStrictHostKeyChecking=no ${BH[${!iN}]} "ssh -A $i \"df -h |grep -i 'data' |tail -1\"")	# go via bastion host in right region to get DF info
 				else
 					cR=$(ssh -A -oStrictHostKeyChecking=no $i "df -h |grep -i 'data' |tail -1")
 				fi
@@ -129,11 +129,11 @@ then
 	echo "Transferring to $bastion"											# announce intention to migrate
 	scp kafka[.-][c1]* ${bastion}:~											# copy files to bastion server
 sleep 1
-	ssh -A -oStrictHostKeyChecking=no $bastion "/bin/echo -n $AWSHost >kafkaHost"								# create kafkaHost file to pass name of problem host
+	ssh -A -oStrictHostKeyChecking=no $bastion "/bin/echo -n $AWSHost >kafkaHost"					# create kafkaHost file to pass name of problem host
 sleep 1
-	ssh -A -oStrictHostKeyChecking=no $bastion ~/kafka-1											# run kafka-1 on bastion server to actually fix the problem
+	ssh -A -oStrictHostKeyChecking=no $bastion ~/kafka-1								# run kafka-1 on bastion server to actually fix the problem
 sleep 1
-	ssh -A -oStrictHostKeyChecking=no $bastion "rm ~/*"											# clean-up: remove all files from bastion server
+	ssh -A -oStrictHostKeyChecking=no $bastion "rm ~/*"								# clean-up: remove all files from bastion server
 	exit 0														# We are done here
 fi
 # if this is now being run on the bastion server from the "ssh -A $bastion ~/kafka-1" line above (4 up from here)
@@ -164,7 +164,7 @@ function tryTwice													# try to perform a remote command at most 2 times
 	while [ $err -ne 0  -a  $nt -ne 2 ]
 	do
 sleep 1
-		Z=$( ssh -A -oStrictHostKeyChecking=no $HN "$1" )											# run the command
+		Z=$( ssh -A -oStrictHostKeyChecking=no $HN "$1" )							# run the command
 		err=$?													# grab the returned status code
 		nt=$( Calc "nt + 1" )											# increment number of tries count
 	done
@@ -497,11 +497,11 @@ echo "HN=$HN"
 	then
 # get list of hosts with 3 of this topic partitions for possible use in picker function.
 		getPartitionInfo
-		if [ !-f kafka_partitionInfo.out ]; then getPartitionInfo; fi
+		if [ ! -f kafka_partitionInfo.out ]; then getPartitionInfo; fi
 		if [ -f kafka_partitionInfo.out ]
 		then
 			getBrokerIDs
-			if [ !-f kafka_BIDs.out ]; then getBrokerIDs; fi
+			if [ ! -f kafka_BIDs.out ]; then getBrokerIDs; fi
 		fi
 		rm -f kafka_hosts.out
 		if [ -e "kafka_hosts.out" ]; then return 1; fi
