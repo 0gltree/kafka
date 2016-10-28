@@ -66,9 +66,9 @@ then
 				iN=$(echo $i |awk -F. '{print $2}' |sed "s/-//g")
 				if [ ${!iN} -ne $Cn ]									# if not in this region
 				then
-					cR=$(ssh -A ${BH[${!iN}]} "ssh -A $i \"df -h |grep -i 'data' |tail -1\"")	# jump through bastion server in correct region to get DF info
+					cR=$(ssh -A -oStrictHostKeyChecking=no ${BH[${!iN}]} "ssh -A $i \"df -h |grep -i 'data' |tail -1\"")	# jump through bastion server in correct region to get DF info
 				else
-					cR=$(ssh -A $i "df -h |grep -i 'data' |tail -1")
+					cR=$(ssh -A -oStrictHostKeyChecking=no $i "df -h |grep -i 'data' |tail -1")
 				fi
 				pDf=$(echo $cR |awk '{print $5}' |awk -F\% '{print $1}')				# isolate the numric value only
 				if [ $pDf -ge $ADFL ]
@@ -128,9 +128,12 @@ if [ "$eDC" != "bastion$RN" ]												# if this is not the bastion server (ru
 then
 	echo "Transferring to $bastion"											# announce intention to migrate
 	scp kafka[.-][c1]* ${bastion}:~											# copy files to bastion server
-	ssh -A $bastion "/bin/echo -n $AWSHost >kafkaHost"								# create kafkaHost file to pass name of problem host
-	ssh -A $bastion ~/kafka-1											# run kafka-1 on bastion server to actually fix the problem
-	ssh -A $bastion "rm ~/*"											# clean-up: remove all files from bastion server
+sleep 1
+	ssh -A -oStrictHostKeyChecking=no $bastion "/bin/echo -n $AWSHost >kafkaHost"								# create kafkaHost file to pass name of problem host
+sleep 1
+	ssh -A -oStrictHostKeyChecking=no $bastion ~/kafka-1											# run kafka-1 on bastion server to actually fix the problem
+sleep 1
+	ssh -A -oStrictHostKeyChecking=no $bastion "rm ~/*"											# clean-up: remove all files from bastion server
 	exit 0														# We are done here
 fi
 # if this is now being run on the bastion server from the "ssh -A $bastion ~/kafka-1" line above (4 up from here)
@@ -160,7 +163,8 @@ function tryTwice													# try to perform a remote command at most 2 times
 	nt=0														# init try count for while loop
 	while [ $err -ne 0  -a  $nt -ne 2 ]
 	do
-		Z=$( ssh -A $HN "$1" )											# run the command
+sleep 1
+		Z=$( ssh -A -oStrictHostKeyChecking=no $HN "$1" )											# run the command
 		err=$?													# grab the returned status code
 		nt=$( Calc "nt + 1" )											# increment number of tries count
 	done
@@ -689,6 +693,7 @@ EOT
 #                          #
 ############################
 HN=$AWSHost
+sleep 1
 B=$( tryTwice "pwd" )													# verify that we can reach this host
 if [ "$B" != "/home/$USER" ];  then  echo "could not connect to $AWSHost";  exit 0;  fi					# check expected return string
 H=$AWSHost														# we'll attempt to use this as our initial host
