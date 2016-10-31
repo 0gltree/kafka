@@ -349,7 +349,7 @@ function round
 
 function checkSize
 {
-echo "Checking sizes for $aTL"
+echo "checkSize: Checking sizes for $aTL"
 # we need to see if partition sizes are all nearly the same or if not escalate to xAD.
 	S=$( grep "/${aTL}-[0-9]" kafka_DiskUsage.out |awk '{print $1}' )						# get sizes only
 	m=$( echo $S |wc -w |awk '{print $1}' )										# how many sizes do we have to compare
