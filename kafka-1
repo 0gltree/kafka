@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# er -e 'clusters(ec2...)' -> cluster (ex: kafka701)
-
 # express Intellectual Property Rights
 cat <<EOT
 
@@ -26,13 +24,16 @@ dN=$( dirname $0 )													# path to config file based on calling path to th
 if [ -f ~/kafkaHost ]													# if this file exists
 then
 	AWSHost=$(cat ~/kafkaHost)											# read file as name of host in trouble
-	echo "read kafkaHost=$AWSHost"											# announce it
+	echo "$preamble read kafkaHost=$AWSHost"									# announce it
 else															# just starting up so ..
 	echo "Please tell me the host server to check."									# ask for hostname
 	read AWSHost													# get input from operator
 fi
 # Ticket has:  "Host: xAd-Kafka-US-VPC-52.90.24.184"
 # we need:                        "ec2-52-90-24-184.compute-1.amazonaws.com"
+# method: extract IP address from name provided and use reverse dns lookup (dig -x) to obtain fqdn
+# then use range (er -e) to obtain clusters containing that fqdn.
+# split the resulting cluster into name and number. number is region but might need to add more in kafka.cfg for new ones.
 
 pre=$(echo $AWSHost |cut -c -3)												# isolate the first 3 characters
 # echo "pre=$pre"
@@ -40,42 +41,42 @@ if [ "$pre" != "ec2" ]													# if not "ec2" then should be translated
 then
 	if [ "$pre" != "xAd" ]												# should start with "xAd"
 	then
-		echo "preamble: expecting xAd- or ec2- type of server name"
+		echo "$preamble expecting xAd- or ec2- type of server name"
 		echo "aborting due to unknown type"
 		exit 1
 	fi
-	Ipa=$( echo $AWSHost |awk -F\- '{print $NF}' |awk -F\. '{print $1"-"$2"-"$3"-"$4}' )				# get the numeric tuples as hyphenated IP address
 	iP=$( echo $AWSHost |awk -F\- '{print $NF}' )
 else
 	iP=$(echo $AWSHost |awk -F\. '{print $1}' |awk -F\- '{print $2"."$3"."$4"."$5}')
 fi
 # echo "iP=$iP"
-revDig=$( dig -x $iP |grep PTR |grep ec2 |awk '{print $NF}' )
+revDig=$( dig -x $iP |grep PTR |grep ec2 |awk '{print $NF}' )								# reverse dig to get fqdn from IP
 # echo "revDig=$revDig"
-ncrd=$(echo $(( $(echo $revDig |wc -c |awk '{print $1}') -2)) )
+ncrd=$(echo $(( $(echo $revDig |wc -c |awk '{print $1}') -2)) )								# Number of Characters in Reverse Dig result (fqdn)
 # echo "ncrd=$ncrd"
-revDig=$( echo $revDig |cut -c 1-$ncrd )
-# echo "preamble: revDig=$revDig"
-clusterName=$( er -e clusters\( $revDig \))
-# echo "preamble: clusterName=$clusterName"
-ncrn=$(echo $clusterName |wc -c |awk '{print $1}')
-nc=4
+revDig=$( echo $revDig |cut -c 1-$ncrd )										# remove trailing decimal '.' character
+# echo "$preamble revDig=$revDig"
+clusterName=$( er -e clusters\( $revDig \))										# use range and fqdn to get cluster name
+# echo "$preamble clusterName=$clusterName"
+# need to find beginning of trailing cluster number.
+ncrn=$(echo $clusterName |wc -c |awk '{print $1}')									# Number of Characters in cluster name
+nc=4															# will be reduced by one: so will try 3, then 2, then 1
 tr=""
-crn=4132
-while [ "$tr" = "" ]
+crn=4132														# an out of bounds cluster number
+while [ "$tr" = "" ]													# will exit when only number found
 do
 	nc=$(( $nc - 1 ))
 	nccn=$(( $ncrn - $nc ))
-	crn=$(echo $clusterName |cut -c $nccn- )
-	tr=$( [[ $crn =~ ^-?[0-9]+$ ]] && echo $crn )
+	crn=$(echo $clusterName |cut -c $nccn- )									# isolate last nc characters (looking for Cluster Region Number)
+	tr=$( [[ $crn =~ ^-?[0-9]+$ ]] && echo $crn )									# "" or cluster number
 done
 
-echo "preamble: crn=$crn"
+echo "$preamble crn=$crn"
 nccn=$(( $nccn - 1 ))
-cpfx=$(echo $clusterName |cut -c 1-$nccn )
-echo "preamble: cpfx=$cpfx"
+cpfx=$(echo $clusterName |cut -c 1-$nccn )										# cluster prefix (name portion only)
+echo "$preamble cpfx=$cpfx"
 AWSHost=$revDig
-echo "preamble: AWSHost=$AWSHost"
+echo "$preamble AWSHost=$AWSHost"
 echo "Using $AWSHost"
 
 R=$( echo $AWSHost |awk -F. '{print $2}' )										# isolate region
@@ -95,28 +96,28 @@ case "$R" in
 	"cn-north-1")		RN=$CNN1
 		;;
 esac
-echo "preamble: $R -> $RN"													# us-west-2 -> 701
-nB=$(echo ${BH[$RN]} |wc -w |awk '{print $1}')
-rI=$(echo $(( $RANDOM % $nB +1 )) )
-bastion=$(echo "${BH[$RN]}" |head -$rI |tail -1)
-echo "preamble: bastion=$bastion"
-eDC=$(cat /etc/defaultcluster)
+echo "$preamble $R -> $RN"													# us-west-2 -> 701
+nB=$(echo ${BH[$RN]} |wc -w |awk '{print $1}')										# number of bastion hosts in BH string for this cluster
+rI=$(echo $(( $RANDOM % $nB +1 )) )											# pick a random bastion host, in the region, to use
+bastion=$(echo "${BH[$RN]}" |head -$rI |tail -1)									# fqdn for random bastion host selected above
+echo "$preamble bastion=$bastion"
+eDC=$(cat /etc/defaultcluster)												# need for testing whether on taos or bastion
 
 # here is the (parent/child) split.
 # if we are running from taos, then copy files and transfer to bastion server to complete the run.
 if [ "$eDC" != "bastion$RN" ]												# if this is not the bastion server (run from taos.us-east-1.xad.com)
 then
-	echo "preamble: Transferring to $bastion"											# announce intention to migrate
+	echo "$preamble Transferring to $bastion"									# announce intention to migrate
 	scp kafka[.-][c1]* ${bastion}:~											# copy files to bastion server
 sleep 1
 	ssh -A -oStrictHostKeyChecking=no $bastion "/bin/echo -n $AWSHost >kafkaHost"					# create kafkaHost file to pass name of problem host (line 24 above)
 sleep 1
-	ssh -A -oStrictHostKeyChecking=no $bastion ~/kafka-1								# run kafka-1 on bastion server to actually fix the problem as child
+	ssh -A -oStrictHostKeyChecking=no $bastion ~/kafka-1								# run kafka-1, as child, on bastion server to actually fix the problem
 sleep 1
 	ssh -A -oStrictHostKeyChecking=no $bastion "rm ~/*"								# clean-up: remove all files from bastion server
 	exit 0														# We are done here (parent exits)
 fi
-# if this is now being run on the bastion server from the "ssh -A $bastion ~/kafka-1" line above (4 up from here)
+# if this is now being run on the bastion server from the "ssh -A $bastion ~/kafka-1" line above (5 up from here)
 # then it (the child) will continue in the main section following all of the function declarations.
 
 #############################
@@ -132,7 +133,7 @@ function Calc
 function jumpFail
 {	if [ $? -ne 0 ]
 	then
-		echo "jumpFail: failed twice trying to execute command via jumphost"
+		echo "$jumpFail failed twice trying to execute command via jumphost"
 		echo "suggest checking remote access first, then retry script."
 		exit 1
 	fi
@@ -150,7 +151,7 @@ sleep 1
 	done
 	if [ $err -ne 0 ]
 	then
-		echo "tryTwice: Failed twice trying to execute command via ssh to $HN" >/dev/stderr
+		echo "$tryTwice Failed twice trying to execute command via ssh to $HN" >/dev/stderr
 		echo "Command: $1" >/dev/stderr
 		echo "Suggest checking remote access first, then retry script." >/dev/stderr
 		exit 1
@@ -197,7 +198,7 @@ function setVdirs
 			DD=$dP
 		fi
 	fi
-	echo "setVdirs: DataDir=$DD   BinDir=$BD   ConfigDir=$CD"
+	echo "$setVdirs DataDir=$DD   BinDir=$BD   ConfigDir=$CD"
 }
 
 function getDF
@@ -207,14 +208,14 @@ function getDF
 	then
 		if [ "$DF" = "" ]
 		then
-			echo "getDF: Couldn't get DF for $DD"
+			echo "$getDF Couldn't get DF for $DD"
 			echo "Should escalate."
 			exit 0
 		fi
-		echo "getDF: $DD DF=${DF} % full"
+		echo "$getDF $DD DF=${DF} % full"
 		return 0
 	else
-		echo "getDF: problem getting DF of /data"
+		echo "$getDF problem getting DF of /data"
 		DF=-1
 		return 1
 	fi
@@ -226,7 +227,7 @@ function getTopic
 		L=$( tail -2 kafka_DiskUsage.out |head -1 )								# get largest partition
 	else
 		L=$( grep -v "${T2}-[0-9]" kafka_DiskUsage.out |tail -2 |head -1 )					# get second largest partition
-		echo "getTopic: L=$L"
+		echo "$getTopic L=$L"
 	fi
 	L1=$( echo $L |awk -F/ '{print $NF}' )										# strip off directory info.
 	L2=$( echo $L |awk -F- '{print $NF}' |wc -c |awk '{print $1}' )							# number of characters after the last '-' (partition number)
@@ -256,7 +257,7 @@ function getPartitionInfo
 	testTopic=$( head -1 kafka_partitionInfo.out |awk '{print $2}' )
 	if [ "$testTopic" != "$T" ]
 	then
-		echo "getPartitionInfo: Failed to get new partitionInfo for $T - got $testTopic instead."
+		echo "$getPartitionInfo Failed to get new partitionInfo for $T - got $testTopic instead."
 		return 1
 	fi
 	return $err
@@ -275,7 +276,7 @@ function getDuInfo
 {	err=0
 # get disk usage info for topic partitions.
 	P=$( tryTwice "du -h ${DD}/ |sort -h |grep -iv 'last login'" )
-# echo "getDuInfo: P=$P"
+# echo "$getDuInfo P=$P"
 # P has all the results on one line. We need to reformat to individual lines per entry.
 	r[0]="  "                                                                                                       # spaces between the first and second part of each line
 	r[1]="
@@ -288,7 +289,7 @@ function getDuInfo
 		err=$(( $err | $? ))
 		j=$( Calc "1 - $j" )                                                                                    # flip-flop (1-0=1, 1-1=0) to switch between spaces and linefeed
 	done
-# echo "getDuInfo wc-l=$( wc -l kafka_DiskUsage.out)"
+# echo "$getDuInfo wc-l=$( wc -l kafka_DiskUsage.out)"
 	return $err
 }
 
@@ -296,7 +297,7 @@ function isItRebuilt
 {	fE=$( tryTwice "sudo su - xad -c \"ls ${DD}/* |grep $REBUILT\" |egrep -iv 'last login|no such file'" )
 	if [ "$fE" != "" ]												# if the edge case flag file exists
 	then
-		echo "isItRebuilt: This seems to be a special case where the host was rebuilt."
+		echo "$isItRebuilt This seems to be a special case where the host was rebuilt."
 		echo "You should do this by hand, as I am not yet equipped to handle it."
 		exit 0													# can return zero to handle normally
 	fi
@@ -326,7 +327,7 @@ function round
 
 function checkSize
 {
-echo "checkSize: Checking sizes for $aTL"
+echo "$checkSize Checking sizes for $aTL"
 # we need to see if partition sizes are all nearly the same or if not escalate to xAD.
 	S=$( grep "/${aTL}-[0-9]" kafka_DiskUsage.out |awk '{print $1}' )						# get sizes only
 	m=$( echo $S |wc -w |awk '{print $1}' )										# how many sizes do we have to compare
@@ -349,7 +350,7 @@ echo "checkSize: Checking sizes for $aTL"
 		HN=$OHN													# back to the problem host
 		S=$( grep "/${aTL}-[0-9]" kafka_DiskUsage.out |awk '{print $1}' )					# get Sizes for this topic
 		m=$( echo $S |wc -w |awk '{print $1}' )									# number of Sizes found
-		if [ $m -lt 2 ]; then  echo "checkSize: Failed to get more than 1 partition";  exit 0;  fi				# verify we now have more than one size
+		if [ $m -lt 2 ]; then  echo "$checkSize Failed to get more than 1 partition";  exit 0;  fi				# verify we now have more than one size
 	fi
 # split size into number and scale
 	j=0
@@ -374,9 +375,9 @@ echo "checkSize: Checking sizes for $aTL"
 		n=$( Calc "$i + 1" )
 		if [ "${SC[$i]}" != "${SC[$n]}" ]
 		then
-echo "checkSize: ${SC[$i]} not eq ${SC[$n]}"
+echo "$checkSize ${SC[$i]} not eq ${SC[$n]}"
 			isItRebuilt
-			echo "checkSize: partition sizes too far apart"
+			echo "$checkSize partition sizes too far apart"
 			echo "Need to escalate!"
 			exit 0
 		fi
@@ -394,16 +395,16 @@ echo "checkSize: ${SC[$i]} not eq ${SC[$n]}"
 	done
 	pos=$( Calc "( $ls * $partitionSizeDelta ) / 100" )								# Percent Of Size
 	lsl=$( Calc "$ls - $pos" )											# Lower Size Limit
-echo "checkSize: ls=$ls  pos=$pos  lsl=$lsl"
+echo "$checkSize ls=$ls  pos=$pos  lsl=$lsl"
 	for (( i=0; i<$m; i++ ))
 	do
 		if [ ${SL[$i]} -lt $lsl ]
 		then
-echo "checkSize: ${SL[$i]} lessthan $lsl"
+echo "$checkSize ${SL[$i]} lessthan $lsl"
 			isItRebuilt
 			if [ $? -eq 1 ]
 			then
-				echo "checkSize: Need to escalate!"
+				echo "$checkSize Need to escalate!"
 				echo "partition sizes too far apart"
 				exit 0
 			fi
@@ -421,29 +422,29 @@ function checkHost
 		getDF													# so this makes 4 attempts
 		if [ $DF -eq -1 ]
 		then
-			echo "checkHost: Failed to get \"Disk Full\" info: DF=$DF"
+			echo "$checkHost Failed to get \"Disk Full\" info: DF=$DF"
 			exit 1
 		fi
 	fi
 	if [ $DF -lt $ADFL ]
 	then
-		echo "checkHost: This disk usage shows less than ${ADFL}% used DF=${DF}%."
+		echo "$checkHost This disk usage shows less than ${ADFL}% used DF=${DF}%."
 		echo "The alert may have already cleared."
 		exit 0
 	fi
 	if [ $DF -gt $UDFL ]
 	then
-		echo "checkHost: This disk is more than ${UDFL}% full. DF=${DF}%"
+		echo "$checkHost This disk is more than ${UDFL}% full. DF=${DF}%"
 		echo "We can try to do the procedure, or you might want to escalate to xAd immediately."
 		echo "Shall we proceed ( y or n )?"
 		read Reply
 		case "$Reply" in
-		"n" | "N")	echo "checkHost: OK - Please escalate."
+		"n" | "N")	echo "$checkHost OK - Please escalate."
 				exit 0
 			;;
-		"y" | "Y")	echo "checkHost: Proceeding"
+		"y" | "Y")	echo "$checkHost Proceeding"
 			;;
-		*)		echo "checkHost: You really should quit trying to jerk my chain."
+		*)		echo "$checkHost You really should quit trying to jerk my chain."
 				exit 1
 			;;
 		esac
@@ -455,18 +456,18 @@ function checkHost
 	getDuInfo
 # now to check any topics that are 10G or larger for possible misconfigurations shown by radically different sizes.
 	nL=$( wc -l kafka_DiskUsage.out |awk '{print $1}' )
-# echo "checkHost: nL=$nL"
-	if [ $nL -le 1 ];  then  echo "checkHost: no kafka partitions on this host.";  exit 1;  fi
+# echo "$checkHost nL=$nL"
+	if [ $nL -le 1 ];  then  echo "$checkHost no kafka partitions on this host.";  exit 1;  fi
 # get list of topics having size in the Gb range with no fractional part ( >= 10G )
 	nL2=$( Calc "$nL - 1" )
 	scl=$( head -$nL2 kafka_DiskUsage.out |tail -1 |awk '{print $1}')
 	ncs=$(( $(echo $scl |wc -c |awk '{print $1}') - 1 ))
 	scale=$(echo $scl |cut -c $ncs)
-echo "checkHost: scl=$scl  ncs=$ncs  scale=$scale"
-# echo "checkHost: scale=$scale    nL2=$nL2"
+echo "$checkHost scl=$scl  ncs=$ncs  scale=$scale"
+# echo "$checkHost scale=$scale    nL2=$nL2"
 	TL=$( head -$nL2 kafka_DiskUsage.out |grep "[0-9]$scale " |grep -v "[0-9]\.[1-9]" |sort -u - |awk '{print $2}' |awk -F\/ '{print $NF}' )
-# echo "checkHost: TL=$TL"
-	if [ "$TL" = "" ];  then  echo "checkHost: Could not find any large partitions on this host.";  exit 1;  fi
+# echo "$checkHost TL=$TL"
+	if [ "$TL" = "" ];  then  echo "$checkHost Could not find any large partitions on this host.";  exit 1;  fi
 	pTL=" "
 	for i in $TL
 	do
@@ -483,10 +484,10 @@ echo "checkHost: scl=$scl  ncs=$ncs  scale=$scale"
 # now that we know there are no misconfiguration situations to escalate, clear out and reload DU info.
 	rm -f kafka_DiskUsage.out;  if [ -e "kafka_DiskUsage.out" ]; then return 1; fi					# remove old file or return failure
 	getDuInfo
-echo "checkHost: HN=$HN"
+echo "$checkHost HN=$HN"
 # get the largest disk usage topic
 	getTopic
-	echo "checkHost: Topic: $T"
+	echo "$checkHost Topic: $T"
 	NT=$( grep "${T}-[0-9]" kafka_DiskUsage.out |wc -l |awk '{print $1}' )						# number of entries for this topic
 	if [ $NT -lt 2 ]
 	then
@@ -543,12 +544,12 @@ function picker
 
 function findHost
 {	HN=$( er -e %${cpfx}${RN} |grep $H )									# start with the hostname from the email
-	echo "findHost: got er=$HN"
-	if [ $? -ne 0 ];  then  HN=$( er -e %${cpfx}${RN} |grep $H ); echo "findHost retry er=$HN"; jumpFail;  fi	# retry on fail or die
+	echo "$findHost got er=$HN"
+	if [ $? -ne 0 ];  then  HN=$( er -e %${cpfx}${RN} |grep $H ); echo "$findHost retry er=$HN"; jumpFail;  fi	# retry on fail or die
 	edc=$( tryTwice "cat /etc/defaultcluster | grep -v \"Last login\"" )
-	echo "findHost: DefaultCluster: $edc"
+	echo "$findHost DefaultCluster: $edc"
 	ZKS=$( tryTwice "er -e %${edc}:ZK_CONNECT_STRING  | grep -v \"Last login\"" )
-	echo "findHost: ZooKeeperConnectString: $ZKS"
+	echo "$findHost ZooKeeperConnectString: $ZKS"
 	c=0
 	checkHost
 	while [ $? != 0 ]
@@ -556,7 +557,7 @@ function findHost
 		c=$( Calc "$c + 1" )
 		if [ $c -eq 3 ]
 		then
-			echo "findHost: Did not find host with more than one $T partition"
+			echo "$findHost Did not find host with more than one $T partition"
 			echo "Suggest escalate to xAD"
 			echo "Alternatively, re-run the script or try manually"
 			exit 0
@@ -581,20 +582,20 @@ function getRetentionValue
 }
 
 function setRetentionValue
-{	echo "setRetentionValue $( date ): I am going to change the retention time of $T from $RV to $NRV"
+{	echo "$setRetentionValu $( date ): I am going to change the retention time of $T from $RV to $NRV"
 	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retention.ms=${NRV} '"  )
 	pRV=$RV
 	getRetentionValue
-	echo "setRetentionValue: RV is now $RV"
+	echo "$setRetentionValue RV is now $RV"
 	RV=pRV
 }
 
 function resetRV
-{	echo "resetRV $( date ): I am going to restore the retention value of $T from $NRV to $RV"
+{	echo "$resetRV $( date ): I am going to restore the retention value of $T from $NRV to $RV"
 	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retention.ms=${RV} '"  )
 	pRV=RV
 	getRetentionValue
-	echo "resetRV: RV is now $RV"
+	echo "$resetRV RV is now $RV"
 	RV=pRV
 }
 
@@ -616,7 +617,7 @@ function lvlDown
 
 function getSecs													# get number of seconds since 1/1/1900_00:00
 {	ct=$( date "+%s" )
-	echo "getSecs: LR=$LR   ct=$ct"
+	echo "$getSecs LR=$LR   ct=$ct"
 }
 
 function waitTime
@@ -628,7 +629,7 @@ function tryFix														# see if we can adjust the retention value
 	NRV=$( Calc "$RV - ( ( $RV * $retentionTimeDelta ) / 100 )" )							# New Retention Value
 	if [ $NRV -le 0 -o $NRV -ge $RV ]
 	then
-		echo "tryFix: new retention not acceptable"
+		echo "$tryFix new retention not acceptable"
 		echo "current value: $RV"
 		echo "new retention: $NRV"
 		echo "Do not know how to proceed"
@@ -657,7 +658,7 @@ EOT
 	read Reply													# do not care what it is.
 	getSecs
 	ctis=$ct
-	echo "tryFix: $ctis" >last_run.txt
+	echo "$tryFix $ctis" >last_run.txt
 
 # ask the operator if OK to make change.
 	cat <<EOT
@@ -666,29 +667,29 @@ I can change the RetentionValue from $RV to $NRV if you like.
 EOT
 	read Reply
 	case "$Reply" in
-	"Y" | "y")	echo "tryFix: Please confirm your answer again:(Y or N)"
+	"Y" | "y")	echo "$tryFix Please confirm your answer again:(Y or N)"
 			read Reply2
 			case "$Reply2" in
-			"Y" | "y")	echo "tryFix: do the deed"
+			"Y" | "y")	echo "$tryFix do the deed"
 					setRetentionValue
 				;;
-			"N" | "n")	echo "tryFix: Canceling the intent to make changes."
+			"N" | "n")	echo "$tryFix Canceling the intent to make changes."
 					if [ $Lvl -eq 1 ]; then exit 0; fi						# nothing more to be done
 					lvlDown
 					getDF
 				;;
-			*)		echo "tryFix: STOP THAT!!!!"
+			*)		echo "$tryFix STOP THAT!!!!"
 					if [ $Lvl -eq 1 ]; then exit 1; fi
 					lvlDown
 					getDF
 			esac
 		;;
-	"N" | "n")	echo "tryFix: OK - I won't make any changes."
+	"N" | "n")	echo "$tryFix OK - I won't make any changes."
 			if [ $Lvl -eq 1 ]; then exit 0; fi								# nothing more to be done
 			lvlDown
 			getDF
 		;;
-	*)		echo "tryFix: Don't EVER do that again!!!!"
+	*)		echo "$tryFix Don't EVER do that again!!!!"
 	esac
 }
 
@@ -701,12 +702,12 @@ EOT
 HN=$AWSHost
 sleep 1
 B=$( tryTwice "pwd" )													# verify that we can reach this host
-if [ "$B" != "/home/$USER" ];  then  echo "main: could not connect to $AWSHost";  exit 0;  fi					# check expected return string
+if [ "$B" != "/home/$USER" ];  then  echo "$main could not connect to $AWSHost";  exit 0;  fi					# check expected return string
 H=$AWSHost														# we'll attempt to use this as our initial host
 rm -f kafka_connect.txt													# remove old file for appending new info
 if [ -e "kafka_connect.txt" ]; then exit 1; fi
 findHost														# find host where we can verify and adjust
-echo "main: Using kafka host $HN"												# Got a good host
+echo "$main Using kafka host $HN"												# Got a good host
 tryFix															# see if we can proceed
 
 # at this point we should have altered the retention value of the largest partition(s)
@@ -726,7 +727,7 @@ then															# good to continue
 	while [ $DF -gt $ADFL -a $ct -lt $quitTime ]
 	do
 		LR=$( Calc "$ct + $sleepTime" )										# set next wait time
-		echo "main: DF=$DF %"
+		echo "$main DF=$DF %"
 		waitTime												# wait for next check
 		if [ $Lvl -eq 1 ]
 		then
@@ -751,14 +752,14 @@ then															# good to continue
 	getDF
 	if [ $DF -gt 0 ]
 	then
-		echo "main: Data Volume = $DF %used"										# closing display of disk usage
+		echo "$main Data Volume = $DF %used"										# closing display of disk usage
 	fi
 	if [ $DF -ge $ADFL ]
 	then
-		echo "main: Failed to reduce the data volume size below alert threshold"
+		echo "$main Failed to reduce the data volume size below alert threshold"
 		echo "Must escalate to xAd."
 	fi
 else															# tryFix returned error
-	echo "main: Something went wrong. Please investigate."
+	echo "$main Something went wrong. Please investigate."
 	echo "Then either re-try or escalate."
 fi
