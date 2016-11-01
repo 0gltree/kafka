@@ -49,15 +49,15 @@ then
 else
 	iP=$(echo $AWSHost |awk -F\. '{print $1}' |awk -F\- '{print $2"."$3"."$4"."$5}')
 fi
-echo "iP=$iP"
+# echo "iP=$iP"
 revDig=$( dig -x $iP |grep PTR |grep ec2 |awk '{print $NF}' )
-echo "revDig=$revDig"
+# echo "revDig=$revDig"
 ncrd=$(echo $(( $(echo $revDig |wc -c |awk '{print $1}') -2)) )
-echo "ncrd=$ncrd"
+# echo "ncrd=$ncrd"
 revDig=$( echo $revDig |cut -c 1-$ncrd )
-echo "preamble: revDig=$revDig"
+# echo "preamble: revDig=$revDig"
 clusterName=$( er -e clusters\( $revDig \))
-echo "preamble: clusterName=$clusterName"
+# echo "preamble: clusterName=$clusterName"
 ncrn=$(echo $clusterName |wc -c |awk '{print $1}')
 nc=4
 tr=""
@@ -70,22 +70,13 @@ do
 	tr=$( [[ $crn =~ ^-?[0-9]+$ ]] && echo $crn )
 done
 
-echo "crn=$crn"
+echo "preamble: crn=$crn"
 nccn=$(( $nccn - 1 ))
 cpfx=$(echo $clusterName |cut -c 1-$nccn )
-echo "cpfx=$cpfx"
-# clusterName=test-kafka-dest101
-# crn=101
-# cpfx=test-kafka-dest
+echo "preamble: cpfx=$cpfx"
 AWSHost=$revDig
 echo "preamble: AWSHost=$AWSHost"
 echo "Using $AWSHost"
-#else															# we have ec2-<IP> form but still need to verify reachability
-#	eDC=$( cat /etc/defaultcluster )										# get the name of the default cluster for this bastion server
-#	Cn=$( echo $eDC |cut -c $(( $( echo $eDC |wc -c ) -3 ))- )							# isolate the cluster number from the default cluster name
-#	R=$(echo $AWSHost |awk -F\. '{print $2}' |sed "s/-//g")
-#echo "preamble: R=$R  ${!R}  Cn=$Cn  ${BH[${!R}]}"
-#fi
 
 R=$( echo $AWSHost |awk -F. '{print $2}' )										# isolate region
 
@@ -110,7 +101,8 @@ rI=$(echo $(( $RANDOM % $nB +1 )) )
 bastion=$(echo "${BH[$RN]}" |head -$rI |tail -1)
 echo "preamble: bastion=$bastion"
 eDC=$(cat /etc/defaultcluster)
-# here is the split.
+
+# here is the (parent/child) split.
 # if we are running from taos, then copy files and transfer to bastion server to complete the run.
 if [ "$eDC" != "bastion$RN" ]												# if this is not the bastion server (run from taos.us-east-1.xad.com)
 then
@@ -119,13 +111,13 @@ then
 sleep 1
 	ssh -A -oStrictHostKeyChecking=no $bastion "/bin/echo -n $AWSHost >kafkaHost"					# create kafkaHost file to pass name of problem host (line 24 above)
 sleep 1
-	ssh -A -oStrictHostKeyChecking=no $bastion ~/kafka-1								# run kafka-1 on bastion server to actually fix the problem
+	ssh -A -oStrictHostKeyChecking=no $bastion ~/kafka-1								# run kafka-1 on bastion server to actually fix the problem as child
 sleep 1
 	ssh -A -oStrictHostKeyChecking=no $bastion "rm ~/*"								# clean-up: remove all files from bastion server
-	exit 0														# We are done here
+	exit 0														# We are done here (parent exits)
 fi
 # if this is now being run on the bastion server from the "ssh -A $bastion ~/kafka-1" line above (4 up from here)
-# then it will continue in the main section following all of the function declarations.
+# then it (the child) will continue in the main section following all of the function declarations.
 
 #############################
 #                           #
@@ -283,8 +275,7 @@ function getDuInfo
 {	err=0
 # get disk usage info for topic partitions.
 	P=$( tryTwice "du -h ${DD}/ |sort -h |grep -iv 'last login'" )
-#	P=$( tryTwice "du -h $DD |sort -h" )
-echo "getDuInfo: P=$P"
+# echo "getDuInfo: P=$P"
 # P has all the results on one line. We need to reformat to individual lines per entry.
 	r[0]="  "                                                                                                       # spaces between the first and second part of each line
 	r[1]="
@@ -297,7 +288,7 @@ echo "getDuInfo: P=$P"
 		err=$(( $err | $? ))
 		j=$( Calc "1 - $j" )                                                                                    # flip-flop (1-0=1, 1-1=0) to switch between spaces and linefeed
 	done
-echo "getDuInfo wc-l=$( wc -l kafka_DiskUsage.out)"
+# echo "getDuInfo wc-l=$( wc -l kafka_DiskUsage.out)"
 	return $err
 }
 
@@ -383,7 +374,7 @@ echo "checkSize: Checking sizes for $aTL"
 		n=$( Calc "$i + 1" )
 		if [ "${SC[$i]}" != "${SC[$n]}" ]
 		then
-# echo "${SC[$i]} not eq ${SC[$n]}"
+echo "checkSize: ${SC[$i]} not eq ${SC[$n]}"
 			isItRebuilt
 			echo "checkSize: partition sizes too far apart"
 			echo "Need to escalate!"
@@ -403,11 +394,12 @@ echo "checkSize: Checking sizes for $aTL"
 	done
 	pos=$( Calc "( $ls * $partitionSizeDelta ) / 100" )								# Percent Of Size
 	lsl=$( Calc "$ls - $pos" )											# Lower Size Limit
+echo "checkSize: ls=$ls  pos=$pos  lsl=$lsl"
 	for (( i=0; i<$m; i++ ))
 	do
 		if [ ${SL[$i]} -lt $lsl ]
 		then
-# echo "${SL[$i]} lessthan $lsl"
+echo "checkSize: ${SL[$i]} lessthan $lsl"
 			isItRebuilt
 			if [ $? -eq 1 ]
 			then
@@ -463,13 +455,17 @@ function checkHost
 	getDuInfo
 # now to check any topics that are 10G or larger for possible misconfigurations shown by radically different sizes.
 	nL=$( wc -l kafka_DiskUsage.out |awk '{print $1}' )
-echo "checkHost: nL=$nL"
+# echo "checkHost: nL=$nL"
 	if [ $nL -le 1 ];  then  echo "checkHost: no kafka partitions on this host.";  exit 1;  fi
 # get list of topics having size in the Gb range with no fractional part ( >= 10G )
 	nL2=$( Calc "$nL - 1" )
-echo "checkHost: scale=$scale    nL2=$nL2"
+	scl=$( head -$nL2 kafka_DiskUsage.out |tail -1 |awk '{print $1}')
+	ncs=$(( $(echo $scl |wc -c |awk '{print $1}') - 1 ))
+	scale=$(echo $scl |cut -c $ncs)
+echo "checkHost: scl=$scl  ncs=$ncs  scale=$scale"
+# echo "checkHost: scale=$scale    nL2=$nL2"
 	TL=$( head -$nL2 kafka_DiskUsage.out |grep "[0-9]$scale " |grep -v "[0-9]\.[1-9]" |sort -u - |awk '{print $2}' |awk -F\/ '{print $NF}' )
-echo "checkHost: TL=$TL"
+# echo "checkHost: TL=$TL"
 	if [ "$TL" = "" ];  then  echo "checkHost: Could not find any large partitions on this host.";  exit 1;  fi
 	pTL=" "
 	for i in $TL
@@ -645,7 +641,7 @@ Comment to be added to SalesForce Ticket:
         Proposed Retention Value:       $NRV
         /data % full:                   $DF
 
-Please cut the above information and add it as a comment in the SalesForce Ticket.
+Please cut the above information and add it as a comment in the SalesForce Ticket BEFORE doing anything else!.
 Press enter ONLY AFTER you have done that.
             ---- -----
 
@@ -691,6 +687,7 @@ EOT
 ############################
 #                          #
 #  Start of main program.  #
+#      executed by child.  #
 #                          #
 ############################
 HN=$AWSHost
