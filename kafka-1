@@ -582,12 +582,20 @@ function getRetentionValue
 
 function setRetentionValue
 {	echo "setRetentionValue $( date ): I am going to change the retention time of $T from $RV to $NRV"
-	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${NRV} '"  )
+	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retention.ms=${NRV} '"  )
+	pRV=$RV
+	getRetentionValue
+	echo "setRetentionValue: RV is now $RV"
+	RV=pRV
 }
 
 function resetRV
 {	echo "resetRV $( date ): I am going to restore the retention value of $T from $NRV to $RV"
-	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retenention.ms=${RV} '"  )
+	SRV=$( tryTwice "sudo su - xad -c '${BD}/kafka-topics.sh --zookeeper $ZKS --topic $T --alter --config retention.ms=${RV} '"  )
+	pRV=RV
+	getRetentionValue
+	echo "resetRV: RV is now $RV"
+	RV=pRV
 }
 
 function lvlUp
